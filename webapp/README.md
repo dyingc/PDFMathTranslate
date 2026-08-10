@@ -30,8 +30,12 @@ uv pip install --python .venv/bin/python "tencentcloud-sdk-python-tmt==3.0.1250"
 ## 运行
 
 ```bash
-.venv/bin/uvicorn webapp.app:app --port 8077
+./webapp/start.sh          # 默认 8077
+./webapp/start.sh 8123     # 指定端口
 ```
+
+端口被本应用的旧实例占用时会先杀掉旧的、沿用同一端口；被其他程序占用则自动在
+8000-9000 里找一个空闲端口。也可以直接跑 `.venv/bin/uvicorn webapp.app:app --port 8077`。
 
 打开 http://127.0.0.1:8077 ，填入 DeepSeek API Key（https://platform.deepseek.com/api_keys）即可。
 
