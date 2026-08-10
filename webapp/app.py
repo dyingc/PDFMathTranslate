@@ -66,6 +66,15 @@ POOL = ThreadPoolExecutor(max_workers=2)
 app = FastAPI(title="PDF Translator (DeepSeek)")
 
 
+@app.middleware("http")
+async def _no_cache(request, call_next):
+    """The single-page UI is edited in place; never let a browser pin an old copy."""
+    resp = await call_next(request)
+    if resp.headers.get("content-type", "").startswith("text/html"):
+        resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
 @app.on_event("startup")
 def _startup() -> None:
     # The layout model is what lets pdf2zh keep formulas/figures in place.
