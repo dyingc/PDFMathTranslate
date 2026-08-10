@@ -1,0 +1,53 @@
+# PDF 翻译小应用（DeepSeek）
+
+在 pdf2zh 之上加一层极简 Web UI：上传 PDF → 选语言/模型 → 下载译文。公式、图表版式由 pdf2zh 的
+版面模型保留，本应用不碰这部分逻辑。
+
+## 特性
+
+- 后端模型：`deepseek-v4-flash` / `deepseek-v4-pro`（DeepSeek OpenAI 兼容接口）
+- API Key **只存在服务端进程内存**中：
+  - 保存时会先调一次 DeepSeek `/models` 做校验
+  - 浏览器只拿到一个 `sid` 会话 cookie（httponly），刷新页面无需重新输入
+  - 应用重启 → 内存清空 → 需重新输入
+  - 已禁用 pdf2zh 的配置落盘（见 `app.py` 顶部对 `ConfigManager._save_config` 的处理），
+    否则 pdf2zh 会把 `DEEPSEEK_API_KEY` 写进 `~/.config/PDFMathTranslate/config.json`
+- 输出两个文件：`-mono.pdf`（纯译文）、`-dual.pdf`（原文/译文对照）
+
+## 安装
+
+项目要求 Python 3.11/3.12：
+
+```bash
+uv venv --python 3.12 .venv
+uv pip install --python .venv/bin/python -e . fastapi "uvicorn[standard]" python-multipart
+# 上游 tencentcloud SDK 新版本删掉了 pdf2zh 引用的 TextTranslateRequest，需要降级
+uv pip install --python .venv/bin/python "tencentcloud-sdk-python-tmt==3.0.1250"
+```
+
+## 运行
+
+```bash
+.venv/bin/uvicorn webapp.app:app --port 8077
+```
+
+打开 http://127.0.0.1:8077 ，填入 DeepSeek API Key（https://platform.deepseek.com/api_keys）即可。
+
+首次启动会下载版面分析模型和目标语言字体，需要等待一会儿。
+
+## API
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/config` | 可选模型、语言，以及当前会话是否已有 key |
+| POST | `/api/session` | 表单 `api_key`，校验后写入内存并下发 cookie |
+| DELETE | `/api/session` | 清除本会话的 key |
+| POST | `/api/translate` | 表单 `file`/`model`/`lang_in`/`lang_out`/`pages`，返回 `job_id` |
+| GET | `/api/jobs/{id}` | 轮询进度 |
+| GET | `/api/jobs/{id}/download/{mono\|dual}` | 下载结果 |
+
+## 说明
+
+- 中间文件放在启动时创建的临时目录，进程退出时删除。
+- 默认单机自用：任务队列是进程内的 `ThreadPoolExecutor`（2 并发），未做鉴权与限流，
+  不要直接暴露到公网。
