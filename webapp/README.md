@@ -13,6 +13,8 @@
   - 已禁用 pdf2zh 的配置落盘（见 `app.py` 顶部对 `ConfigManager._save_config` 的处理），
     否则 pdf2zh 会把 `DEEPSEEK_API_KEY` 写进 `~/.config/PDFMathTranslate/config.json`
 - 输出可选：纯译文（`-mono.pdf`）、原文/译文对照（`-dual.pdf`）或两者
+- 除 API Key 外的设置都是持久的：并发参数存服务端 `data/settings.json`，
+  界面上的语言/模型/输出等选择存浏览器 localStorage
 - 任务记录存 SQLite、产物存固定目录，刷新页面或重启应用都不会丢；任务列表从服务端记录渲染，
   因此翻译大文件时可以随意刷新/关标签页
 
@@ -36,6 +38,16 @@ uv pip install --python .venv/bin/python "tencentcloud-sdk-python-tmt==3.0.1250"
 
 端口被本应用的旧实例占用时会先杀掉旧的、沿用同一端口；被其他程序占用则自动在
 8000-9000 里找一个空闲端口。也可以直接跑 `.venv/bin/uvicorn webapp.app:app --port 8077`。
+
+### 并发
+
+```bash
+./webapp/start.sh -w 4 -t 8     # 4 个任务并行，每个任务 8 个 LLM 线程
+```
+
+打给 DeepSeek 的并发请求上限是 `workers × llm-threads`，调大前先确认账号的速率限制；
+版面分析是 CPU 密集的，任务并发过高会互相抢核。等价的环境变量是 `WEBAPP_WORKERS` /
+`WEBAPP_LLM_THREADS`。**设过一次就会记在 `data/settings.json` 里**，之后不带参数启动也生效。
 
 打开 http://127.0.0.1:8077 ，填入 DeepSeek API Key（https://platform.deepseek.com/api_keys）即可。
 
@@ -61,6 +73,7 @@ uv pip install --python .venv/bin/python "tencentcloud-sdk-python-tmt==3.0.1250"
 ```
 data/
   jobs.sqlite          # 任务记录
+  settings.json        # 并发等设置（不含 API Key）
   files/<job_id>/      # <名字>-mono.pdf / <名字>-dual.pdf
 ```
 

@@ -5,6 +5,7 @@ built-in DeepSeek translator. This layer only adds HTTP, a job store, and
 in-memory-only API key handling.
 """
 
+import json
 import os
 import shutil
 import uuid
@@ -58,10 +59,46 @@ OUTPUTS = {
     "dual": "原文/译文对照",
 }
 
+
+# Everything except the API key is durable: settings you pass once stick around
+# for the next start, so `start.sh` needs no flags after the first time.
+SETTINGS_PATH = DATA_DIR / "settings.json"
+
+
+def _settings_int(key: str, env: str, default: int) -> int:
+    """Resolve a setting as: env var (and remember it) > saved value > default."""
+    def to_int(candidate, fallback):
+        try:
+            return max(1, int(candidate))
+        except (TypeError, ValueError):
+            return fallback
+
+    # A typo in the env var falls back to the last good value, not to the
+    # default — silently undoing a deliberate setting would be worse.
+    previous = to_int(_SETTINGS.get(key), default)
+    raw = os.environ.get(env, "").strip()
+    value = to_int(raw, previous) if raw else previous
+    _SETTINGS[key] = value
+    return value
+
+
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+try:
+    _SETTINGS: dict = json.loads(SETTINGS_PATH.read_text())
+except (OSError, ValueError):
+    _SETTINGS = {}
+
+# How many PDFs translate at once. Each job additionally fans out LLM_THREADS
+# concurrent requests to DeepSeek, so the real request concurrency is the
+# product of the two — raise with the provider's rate limit in mind.
+WORKERS = _settings_int("workers", "WEBAPP_WORKERS", 2)
+LLM_THREADS = _settings_int("llm_threads", "WEBAPP_LLM_THREADS", 4)
+SETTINGS_PATH.write_text(json.dumps(_SETTINGS, indent=2))
+
 # The API key is the one thing that stays memory-only, by design.
 SESSIONS: Dict[str, str] = {}
 STORE = Store()
-POOL = ThreadPoolExecutor(max_workers=2)
+POOL = ThreadPoolExecutor(max_workers=WORKERS)
 
 app = FastAPI(title="PDF Translator (DeepSeek)")
 
@@ -81,7 +118,8 @@ def _startup() -> None:
     if ModelInstance.value is None:
         ModelInstance.value = OnnxModel.load_available()
     n = STORE.reap_stale()
-    print(f"[webapp] data dir: {DATA_DIR}"
+    print(f"[webapp] data dir: {DATA_DIR} | "
+          f"workers={WORKERS} llm_threads={LLM_THREADS}"
           + (f" | marked {n} interrupted job(s)" if n else ""))
 
 
@@ -104,6 +142,8 @@ def get_config(sid: Optional[str] = Cookie(None)):
         "languages": LANGUAGES,
         "outputs": OUTPUTS,
         "data_dir": str(DATA_DIR),
+        "workers": WORKERS,
+        "llm_threads": LLM_THREADS,
         "has_key": bool(SESSIONS.get(sid or "")),
     }
 
@@ -151,7 +191,7 @@ def _run_job(job_id: str, src: Path, api_key: str, model: str, lang_in: str,
             lang_in=lang_in,
             lang_out=lang_out,
             service=f"deepseek:{model}",
-            thread=4,
+            thread=LLM_THREADS,
             callback=on_progress,
             model=ModelInstance.value,
             envs={"DEEPSEEK_API_KEY": api_key, "DEEPSEEK_MODEL": model},

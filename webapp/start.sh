@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 # Start the PDF translation web app.
 #
-#   ./webapp/start.sh [PORT]
+#   ./webapp/start.sh [PORT] [-w N] [-t N]
+#
+#   -w, --workers N     并发翻译的任务数        (默认 2, 或 $WEBAPP_WORKERS)
+#   -t, --llm-threads N 每个任务的 LLM 并发线程  (默认 4, 或 $WEBAPP_LLM_THREADS)
+#
+# 实际打给 DeepSeek 的并发请求上限是 workers × llm-threads。
 #
 # Port selection:
 #   - prefers $PORT / $1 / 8077
@@ -74,7 +79,16 @@ else
     exit 1
 fi
 
-if [ $# -ge 1 ]; then DEFAULT_PORT="$1"; fi
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -w|--workers)      export WEBAPP_WORKERS="$2"; shift 2 ;;
+        -t|--llm-threads)  export WEBAPP_LLM_THREADS="$2"; shift 2 ;;
+        -h|--help)         sed -n '2,12p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        [0-9]*)            DEFAULT_PORT="$1"; shift ;;
+        *) echo "未知参数: $1（用 -h 查看用法）" >&2; exit 2 ;;
+    esac
+done
+
 port="$(pick_port)"
 
 echo "启动中… 首次运行需要下载版面模型和字体，请稍候。"

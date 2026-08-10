@@ -68,7 +68,11 @@
 <section id="jobsBox">
   <h2>任务</h2>
   <div id="jobs"><span class="hint">暂无任务</span></div>
-  <div class="hint" style="margin-top:14px">文件保存在 <code id="dataDir"></code>，刷新或重启页面都不影响已完成的结果。</div>
+  <div class="hint" style="margin-top:14px">
+    文件保存在 <code id="dataDir"></code>，刷新或重启页面都不影响已完成的结果。<br>
+    并发：<span id="conc"></span>（同时翻译的任务数 × 每任务的 LLM 线程数），
+    用 <code>./webapp/start.sh -w N -t N</code> 调整，设过一次即长期生效。
+  </div>
 </section>
 
 <script>
@@ -86,8 +90,30 @@ async function boot() {
   fill($('langIn'), cfg.languages); fill($('langOut'), cfg.languages);
   $('langIn').value = 'en'; $('langOut').value = 'zh';
   $('dataDir').textContent = cfg.data_dir;
+  $('conc').textContent = `${cfg.workers} × ${cfg.llm_threads}`;
+  restorePrefs();
   toggle(cfg.has_key);
   refresh();
+}
+
+// Form choices are not secrets, so they live in localStorage and survive both a
+// refresh and an app restart. The API key deliberately does not.
+const PREF_KEYS = ['model', 'output', 'langIn', 'langOut', 'pages'];
+function restorePrefs() {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem('prefs') || '{}'); } catch (e) {}
+  for (const k of PREF_KEYS) {
+    const el = $(k);
+    // Ignore stale values that are no longer offered by the server.
+    if (saved[k] === undefined) continue;
+    if (el.tagName === 'SELECT' && ![...el.options].some(o => o.value === saved[k])) continue;
+    el.value = saved[k];
+  }
+  for (const k of PREF_KEYS) $(k).addEventListener('change', savePrefs);
+}
+function savePrefs() {
+  localStorage.setItem('prefs',
+    JSON.stringify(Object.fromEntries(PREF_KEYS.map(k => [k, $(k).value]))));
 }
 function fill(sel, map) {
   sel.innerHTML = Object.entries(map).map(([v, t]) => `<option value="${v}">${t}</option>`).join('');
