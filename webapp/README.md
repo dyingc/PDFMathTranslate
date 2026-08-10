@@ -13,6 +13,8 @@
   - 已禁用 pdf2zh 的配置落盘（见 `app.py` 顶部对 `ConfigManager._save_config` 的处理），
     否则 pdf2zh 会把 `DEEPSEEK_API_KEY` 写进 `~/.config/PDFMathTranslate/config.json`
 - 输出可选：纯译文（`-mono.pdf`）、原文/译文对照（`-dual.pdf`）或两者
+- 任务记录存 SQLite、产物存固定目录，刷新页面或重启应用都不会丢；任务列表从服务端记录渲染，
+  因此翻译大文件时可以随意刷新/关标签页
 
 ## 安装
 
@@ -43,11 +45,24 @@ uv pip install --python .venv/bin/python "tencentcloud-sdk-python-tmt==3.0.1250"
 | POST | `/api/session` | 表单 `api_key`，校验后写入内存并下发 cookie |
 | DELETE | `/api/session` | 清除本会话的 key |
 | POST | `/api/translate` | 表单 `file`/`model`/`lang_in`/`lang_out`/`pages`/`output`，返回 `job_id` |
+| GET | `/api/jobs` | 全部任务记录（倒序，最多 50 条） |
 | GET | `/api/jobs/{id}` | 轮询进度；完成后 `kinds` 列出可下载的类型 |
+| DELETE | `/api/jobs/{id}` | 删除记录与文件（进行中的任务拒绝删除） |
 | GET | `/api/jobs/{id}/download/{mono\|dual}` | 下载结果 |
 
-## 说明
+## 数据存放
 
-- 中间文件放在启动时创建的临时目录，进程退出时删除。
+默认在 `webapp/data/`（已 gitignore），可用环境变量 `PDF2ZH_WEBAPP_DATA` 覆盖：
+
+```
+data/
+  jobs.sqlite          # 任务记录
+  files/<job_id>/      # <名字>-mono.pdf / <名字>-dual.pdf
+```
+
+上传的原件在翻译成功后删除（可重新上传），译文一直保留，直到你在界面上点"删除"。
+应用重启时，处于 queued/running 的任务会被标记为 `interrupted`——进程内的翻译线程无法跨重启恢复。
+
+## 说明
 - 默认单机自用：任务队列是进程内的 `ThreadPoolExecutor`（2 并发），未做鉴权与限流，
   不要直接暴露到公网。

@@ -1,14 +1,12 @@
 """Minimal web app: translate PDFs with DeepSeek while keeping formulas intact.
 
 Reuses pdf2zh's translation pipeline (`pdf2zh.high_level.translate`) and its
-built-in DeepSeek translator. The only thing this app adds is a small HTTP layer
-plus in-memory-only API key storage.
+built-in DeepSeek translator. This layer only adds HTTP, a job store, and
+in-memory-only API key handling.
 """
 
 import os
 import shutil
-import tempfile
-import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -24,15 +22,16 @@ from pdf2zh.config import ConfigManager  # noqa: E402
 ConfigManager._save_config = lambda self: None  # type: ignore[assignment]
 
 from fastapi import Cookie, FastAPI, File, Form, HTTPException, Response, UploadFile  # noqa: E402
-from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
+from fastapi.responses import FileResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from openai import OpenAI  # noqa: E402
 
 from pdf2zh.doclayout import ModelInstance, OnnxModel  # noqa: E402
 from pdf2zh.high_level import translate  # noqa: E402
 
+from webapp.store import DATA_DIR, Store, job_dir  # noqa: E402
+
 BASE_DIR = Path(__file__).parent
-WORK_DIR = Path(tempfile.mkdtemp(prefix="pdf2zh-webapp-"))
 
 MODELS = {
     "deepseek-v4-flash": "DeepSeek V4 Flash (fast / cheap)",
@@ -53,26 +52,33 @@ LANGUAGES = {
     "it": "Italiano",
 }
 
-# In-memory only. Wiped on restart, which is exactly the desired behaviour.
+OUTPUTS = {
+    "both": "两者",
+    "mono": "纯译文",
+    "dual": "原文/译文对照",
+}
+
+# The API key is the one thing that stays memory-only, by design.
 SESSIONS: Dict[str, str] = {}
-JOBS: Dict[str, dict] = {}
-LOCK = threading.Lock()
+STORE = Store()
 POOL = ThreadPoolExecutor(max_workers=2)
 
 app = FastAPI(title="PDF Translator (DeepSeek)")
 
 
 @app.on_event("startup")
-def _load_layout_model() -> None:
+def _startup() -> None:
     # The layout model is what lets pdf2zh keep formulas/figures in place.
     if ModelInstance.value is None:
         ModelInstance.value = OnnxModel.load_available()
+    n = STORE.reap_stale()
+    print(f"[webapp] data dir: {DATA_DIR}"
+          + (f" | marked {n} interrupted job(s)" if n else ""))
 
 
 @app.on_event("shutdown")
-def _cleanup() -> None:
+def _shutdown() -> None:
     SESSIONS.clear()
-    shutil.rmtree(WORK_DIR, ignore_errors=True)
 
 
 def _require_key(sid: Optional[str]) -> str:
@@ -88,6 +94,7 @@ def get_config(sid: Optional[str] = Cookie(None)):
         "models": MODELS,
         "languages": LANGUAGES,
         "outputs": OUTPUTS,
+        "data_dir": str(DATA_DIR),
         "has_key": bool(SESSIONS.get(sid or "")),
     }
 
@@ -117,25 +124,16 @@ def clear_key(response: Response, sid: Optional[str] = Cookie(None)):
     return {"ok": True}
 
 
-OUTPUTS = {
-    "both": "两者",
-    "mono": "纯译文",
-    "dual": "原文/译文对照",
-}
-
-
 def _run_job(job_id: str, src: Path, api_key: str, model: str, lang_in: str,
              lang_out: str, pages: Optional[list], output: str) -> None:
-    job = JOBS[job_id]
-
     def on_progress(t) -> None:
         total = getattr(t, "total", 0) or 0
-        if total:
-            job["progress"] = round(t.n / total, 3)
-        job["stage"] = getattr(t, "desc", "") or "Translating"
+        STORE.progress(job_id,
+                       round(t.n / total, 3) if total else 0.0,
+                       getattr(t, "desc", "") or "Translating")
 
     try:
-        job["status"] = "running"
+        STORE.update(job_id, status="running", stage="Translating")
         out_dir = src.parent
         translate(
             files=[str(src)],
@@ -149,20 +147,15 @@ def _run_job(job_id: str, src: Path, api_key: str, model: str, lang_in: str,
             model=ModelInstance.value,
             envs={"DEEPSEEK_API_KEY": api_key, "DEEPSEEK_MODEL": model},
         )
-        stem = src.stem
         # pdf2zh always writes both variants; keep only what was asked for.
         kinds = ["mono", "dual"] if output == "both" else [output]
         for unwanted in {"mono", "dual"} - set(kinds):
-            (out_dir / f"{stem}-{unwanted}.pdf").unlink(missing_ok=True)
-        job.update(
-            status="done",
-            progress=1.0,
-            stage="Completed",
-            kinds=kinds,
-            **{k: str(out_dir / f"{stem}-{k}.pdf") for k in kinds},
-        )
+            (out_dir / f"{src.stem}-{unwanted}.pdf").unlink(missing_ok=True)
+        src.unlink(missing_ok=True)  # the upload is reproducible; the output is not
+        STORE.update(job_id, status="done", progress=1.0, stage="Completed",
+                     kinds=kinds)
     except Exception as exc:  # noqa: BLE001
-        job.update(status="error", error=str(exc))
+        STORE.update(job_id, status="error", error=str(exc), stage="Failed")
 
 
 @app.post("/api/translate")
@@ -184,13 +177,13 @@ async def start_translate(
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
 
     job_id = uuid.uuid4().hex
-    job_dir = WORK_DIR / job_id
-    job_dir.mkdir(parents=True)
-    src = job_dir / os.path.basename(file.filename)
+    d = job_dir(job_id)
+    d.mkdir(parents=True)
+    src = d / os.path.basename(file.filename)
     src.write_bytes(await file.read())
 
-    JOBS[job_id] = {"status": "queued", "progress": 0.0, "stage": "Queued",
-                    "name": src.stem}
+    STORE.create(job_id, name=src.stem, model=model, lang_in=lang_in,
+                 lang_out=lang_out, pages=pages, output=output)
     POOL.submit(_run_job, job_id, src, api_key, model, lang_in, lang_out,
                 _parse_pages(pages), output)
     return {"job_id": job_id}
@@ -214,22 +207,40 @@ def _parse_pages(spec: str) -> Optional[list]:
     return out or None
 
 
+@app.get("/api/jobs")
+def list_jobs():
+    return {"jobs": STORE.list()}
+
+
 @app.get("/api/jobs/{job_id}")
 def job_status(job_id: str):
-    job = JOBS.get(job_id)
+    job = STORE.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Unknown job")
-    return JSONResponse({k: v for k, v in job.items() if k not in ("mono", "dual")}
-                        | {"has_output": job.get("status") == "done"})
+    return job
+
+
+@app.delete("/api/jobs/{job_id}")
+def delete_job(job_id: str):
+    job = STORE.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Unknown job")
+    if job["status"] in ("queued", "running"):
+        raise HTTPException(status_code=409, detail="任务进行中，无法删除")
+    shutil.rmtree(job_dir(job_id), ignore_errors=True)
+    STORE.delete(job_id)
+    return {"ok": True}
 
 
 @app.get("/api/jobs/{job_id}/download/{kind}")
 def download(job_id: str, kind: str):
-    job = JOBS.get(job_id)
-    if not job or job.get("status") != "done" or kind not in job.get("kinds", []):
+    job = STORE.get(job_id)
+    if not job or kind not in job["kinds"]:
         raise HTTPException(status_code=404, detail="Not available")
-    return FileResponse(job[kind], media_type="application/pdf",
-                        filename=f"{job['name']}-{kind}.pdf")
+    path = job_dir(job_id) / f"{job['name']}-{kind}.pdf"
+    if not path.exists():
+        raise HTTPException(status_code=410, detail="文件已被删除")
+    return FileResponse(path, media_type="application/pdf", filename=path.name)
 
 
 app.mount("/", StaticFiles(directory=BASE_DIR / "static", html=True), name="static")
