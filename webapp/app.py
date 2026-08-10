@@ -87,6 +87,7 @@ def get_config(sid: Optional[str] = Cookie(None)):
     return {
         "models": MODELS,
         "languages": LANGUAGES,
+        "outputs": OUTPUTS,
         "has_key": bool(SESSIONS.get(sid or "")),
     }
 
@@ -116,8 +117,15 @@ def clear_key(response: Response, sid: Optional[str] = Cookie(None)):
     return {"ok": True}
 
 
+OUTPUTS = {
+    "both": "两者",
+    "mono": "纯译文",
+    "dual": "原文/译文对照",
+}
+
+
 def _run_job(job_id: str, src: Path, api_key: str, model: str, lang_in: str,
-             lang_out: str, pages: Optional[list]) -> None:
+             lang_out: str, pages: Optional[list], output: str) -> None:
     job = JOBS[job_id]
 
     def on_progress(t) -> None:
@@ -142,12 +150,16 @@ def _run_job(job_id: str, src: Path, api_key: str, model: str, lang_in: str,
             envs={"DEEPSEEK_API_KEY": api_key, "DEEPSEEK_MODEL": model},
         )
         stem = src.stem
+        # pdf2zh always writes both variants; keep only what was asked for.
+        kinds = ["mono", "dual"] if output == "both" else [output]
+        for unwanted in {"mono", "dual"} - set(kinds):
+            (out_dir / f"{stem}-{unwanted}.pdf").unlink(missing_ok=True)
         job.update(
             status="done",
             progress=1.0,
             stage="Completed",
-            mono=str(out_dir / f"{stem}-mono.pdf"),
-            dual=str(out_dir / f"{stem}-dual.pdf"),
+            kinds=kinds,
+            **{k: str(out_dir / f"{stem}-{k}.pdf") for k in kinds},
         )
     except Exception as exc:  # noqa: BLE001
         job.update(status="error", error=str(exc))
@@ -160,11 +172,14 @@ async def start_translate(
     lang_in: str = Form("en"),
     lang_out: str = Form("zh"),
     pages: str = Form(""),
+    output: str = Form("both"),
     sid: Optional[str] = Cookie(None),
 ):
     api_key = _require_key(sid)
     if model not in MODELS:
         raise HTTPException(status_code=400, detail="Unknown model")
+    if output not in OUTPUTS:
+        raise HTTPException(status_code=400, detail="Unknown output type")
     if not (file.filename or "").lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
 
@@ -177,7 +192,7 @@ async def start_translate(
     JOBS[job_id] = {"status": "queued", "progress": 0.0, "stage": "Queued",
                     "name": src.stem}
     POOL.submit(_run_job, job_id, src, api_key, model, lang_in, lang_out,
-                _parse_pages(pages))
+                _parse_pages(pages), output)
     return {"job_id": job_id}
 
 
@@ -211,10 +226,9 @@ def job_status(job_id: str):
 @app.get("/api/jobs/{job_id}/download/{kind}")
 def download(job_id: str, kind: str):
     job = JOBS.get(job_id)
-    if not job or job.get("status") != "done" or kind not in ("mono", "dual"):
+    if not job or job.get("status") != "done" or kind not in job.get("kinds", []):
         raise HTTPException(status_code=404, detail="Not available")
-    path = job[kind]
-    return FileResponse(path, media_type="application/pdf",
+    return FileResponse(job[kind], media_type="application/pdf",
                         filename=f"{job['name']}-{kind}.pdf")
 
 

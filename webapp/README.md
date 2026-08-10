@@ -12,7 +12,7 @@
   - 应用重启 → 内存清空 → 需重新输入
   - 已禁用 pdf2zh 的配置落盘（见 `app.py` 顶部对 `ConfigManager._save_config` 的处理），
     否则 pdf2zh 会把 `DEEPSEEK_API_KEY` 写进 `~/.config/PDFMathTranslate/config.json`
-- 输出两个文件：`-mono.pdf`（纯译文）、`-dual.pdf`（原文/译文对照）
+- 输出可选：纯译文（`-mono.pdf`）、原文/译文对照（`-dual.pdf`）或两者
 
 ## 安装
 
@@ -42,8 +42,8 @@ uv pip install --python .venv/bin/python "tencentcloud-sdk-python-tmt==3.0.1250"
 | GET | `/api/config` | 可选模型、语言，以及当前会话是否已有 key |
 | POST | `/api/session` | 表单 `api_key`，校验后写入内存并下发 cookie |
 | DELETE | `/api/session` | 清除本会话的 key |
-| POST | `/api/translate` | 表单 `file`/`model`/`lang_in`/`lang_out`/`pages`，返回 `job_id` |
-| GET | `/api/jobs/{id}` | 轮询进度 |
+| POST | `/api/translate` | 表单 `file`/`model`/`lang_in`/`lang_out`/`pages`/`output`，返回 `job_id` |
+| GET | `/api/jobs/{id}` | 轮询进度；完成后 `kinds` 列出可下载的类型 |
 | GET | `/api/jobs/{id}/download/{mono\|dual}` | 下载结果 |
 
 ## 说明
