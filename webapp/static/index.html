@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PDF 翻译 · DeepSeek</title>
+<style>
+  :root { color-scheme: light dark; --fg:#1a1a1a; --muted:#6b7280; --line:#e3e3e6; --accent:#2563eb; }
+  @media (prefers-color-scheme: dark) { :root { --fg:#e8e8ea; --muted:#9aa0a6; --line:#33343a; } }
+  body { font: 15px/1.6 -apple-system, "Segoe UI", "PingFang SC", sans-serif; color: var(--fg);
+         max-width: 680px; margin: 48px auto; padding: 0 20px; }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  h2 { font-size: 15px; margin: 0 0 12px; }
+  p.sub { color: var(--muted); margin-top: 0; }
+  section { border: 1px solid var(--line); border-radius: 10px; padding: 18px; margin-top: 20px; }
+  label { display:block; font-size:13px; color:var(--muted); margin-bottom:4px; }
+  input, select, button { font: inherit; padding: 8px 10px; border-radius: 7px;
+         border: 1px solid var(--line); background: transparent; color: inherit; width: 100%; }
+  button { background: var(--accent); color: #fff; border: none; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; gap: 12px; } .row > div { flex: 1; }
+  .field { margin-bottom: 12px; }
+  progress { width: 100%; height: 6px; margin: 6px 0 2px; }
+  .msg { font-size: 13px; color: var(--muted); min-height: 20px; }
+  .err { color: #dc2626; }
+  a.dl { display:inline-block; margin-right:12px; color:var(--accent); font-size:13px; }
+  .hint { font-size:12px; color:var(--muted); }
+  .job { border-top: 1px solid var(--line); padding: 12px 0; }
+  .job:first-of-type { border-top: none; padding-top: 0; }
+  .job-head { display:flex; justify-content:space-between; align-items:baseline; gap:12px; }
+  .job-name { font-weight: 600; overflow-wrap:anywhere; }
+  .del { width:auto; background:none; color:var(--muted); font-size:12px; padding:2px 6px; }
+  code { font-size: 12px; overflow-wrap: anywhere; }
+</style>
+</head>
+<body>
+<h1>PDF 翻译（保留公式排版）</h1>
+<p class="sub">基于 pdf2zh + DeepSeek。API Key 仅保存在服务端内存中，重启应用后需重新输入。</p>
+
+<section id="keyBox">
+  <div class="field">
+    <label for="key">DeepSeek API Key</label>
+    <input id="key" type="password" placeholder="sk-..." autocomplete="off">
+  </div>
+  <button id="saveKey">保存到本次会话</button>
+  <div class="msg" id="keyMsg"></div>
+</section>
+
+<section id="mainBox" hidden>
+  <div class="field">
+    <label for="file">PDF 文件</label>
+    <input id="file" type="file" accept="application/pdf">
+  </div>
+  <div class="row">
+    <div class="field"><label for="langIn">源语言</label><select id="langIn"></select></div>
+    <div class="field"><label for="langOut">目标语言</label><select id="langOut"></select></div>
+  </div>
+  <div class="row">
+    <div class="field"><label for="model">模型</label><select id="model"></select></div>
+    <div class="field"><label for="pages">页码（可选，如 1,3-5）</label><input id="pages" placeholder="留空 = 全部"></div>
+  </div>
+  <div class="field"><label for="output">输出</label><select id="output"></select></div>
+  <button id="go">开始翻译</button>
+  <div class="msg" id="msg"></div>
+  <div style="margin-top:10px"><a href="#" id="logout" class="hint">清除会话中的 API Key</a></div>
+</section>
+
+<section id="jobsBox">
+  <h2>任务</h2>
+  <div id="jobs"><span class="hint">暂无任务</span></div>
+  <div class="hint" style="margin-top:14px">
+    文件保存在 <code id="dataDir"></code>，刷新或重启页面都不影响已完成的结果。<br>
+    并发：<span id="conc"></span>（同时翻译的任务数 × 每任务的 LLM 线程数），
+    用 <code>./webapp/start.sh -w N -t N</code> 调整，设过一次即长期生效。
+  </div>
+</section>
+
+<script>
+const $ = id => document.getElementById(id);
+const LIVE = ['queued', 'running'];
+const LABEL = { mono: '下载译文 PDF', dual: '下载对照 PDF' };
+const STATUS = { queued: '排队中', running: '翻译中', done: '已完成',
+                 error: '失败', interrupted: '已中断' };
+let cfg = null, timer = null;
+
+async function boot() {
+  cfg = await (await fetch('/api/config')).json();
+  fill($('model'), cfg.models);
+  fill($('output'), cfg.outputs);
+  fill($('langIn'), cfg.languages); fill($('langOut'), cfg.languages);
+  $('langIn').value = 'en'; $('langOut').value = 'zh';
+  $('dataDir').textContent = cfg.data_dir;
+  $('conc').textContent = `${cfg.workers} × ${cfg.llm_threads}`;
+  restorePrefs();
+  toggle(cfg.has_key);
+  refresh();
+}
+
+// Form choices are not secrets, so they live in localStorage and survive both a
+// refresh and an app restart. The API key deliberately does not.
+const PREF_KEYS = ['model', 'output', 'langIn', 'langOut', 'pages'];
+function restorePrefs() {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem('prefs') || '{}'); } catch (e) {}
+  for (const k of PREF_KEYS) {
+    const el = $(k);
+    // Ignore stale values that are no longer offered by the server.
+    if (saved[k] === undefined) continue;
+    if (el.tagName === 'SELECT' && ![...el.options].some(o => o.value === saved[k])) continue;
+    el.value = saved[k];
+  }
+  for (const k of PREF_KEYS) $(k).addEventListener('change', savePrefs);
+}
+function savePrefs() {
+  localStorage.setItem('prefs',
+    JSON.stringify(Object.fromEntries(PREF_KEYS.map(k => [k, $(k).value]))));
+}
+function fill(sel, map) {
+  sel.innerHTML = Object.entries(map).map(([v, t]) => `<option value="${v}">${t}</option>`).join('');
+}
+function toggle(hasKey) { $('keyBox').hidden = hasKey; $('mainBox').hidden = !hasKey; }
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// The job list is rendered purely from the server's records, so a page refresh
+// (or a fresh browser) picks up whatever is still running.
+async function refresh() {
+  const { jobs } = await (await fetch('/api/jobs')).json();
+  $('jobs').innerHTML = jobs.length ? jobs.map(render).join('')
+                                    : '<span class="hint">暂无任务</span>';
+  const live = jobs.some(j => LIVE.includes(j.status));
+  clearInterval(timer);
+  if (live) timer = setInterval(refresh, 1500);
+}
+
+function render(j) {
+  const pct = Math.round((j.progress || 0) * 100);
+  const when = new Date(j.created_at * 1000).toLocaleString();
+  let body = '';
+  if (LIVE.includes(j.status)) {
+    body = `<progress value="${j.progress || 0}" max="1"></progress>
+            <div class="msg">${esc(j.stage || '')} ${pct}%</div>`;
+  } else if (j.status === 'done') {
+    body = j.kinds.map(k =>
+      `<a class="dl" href="/api/jobs/${j.id}/download/${k}">${LABEL[k]}</a>`).join('');
+  } else {
+    body = `<div class="msg err">${esc(j.error || j.status)}</div>`;
+  }
+  const del = LIVE.includes(j.status) ? ''
+    : `<button class="del" onclick="del('${j.id}')">删除</button>`;
+  return `<div class="job">
+    <div class="job-head">
+      <span class="job-name">${esc(j.name)}.pdf</span>
+      <span class="hint">${esc(STATUS[j.status] || j.status)} · ${when}</span>
+    </div>
+    <div class="hint">${esc(j.lang_in)} → ${esc(j.lang_out)} · ${esc(j.model)}${j.pages ? ' · p.' + esc(j.pages) : ''}</div>
+    ${body}${del}
+  </div>`;
+}
+
+async function del(id) {
+  if (!confirm('删除该任务及其文件？')) return;
+  await fetch(`/api/jobs/${id}`, { method: 'DELETE' });
+  refresh();
+}
+
+$('saveKey').onclick = async () => {
+  const fd = new FormData(); fd.append('api_key', $('key').value);
+  $('keyMsg').textContent = '校验中…'; $('keyMsg').className = 'msg';
+  const r = await fetch('/api/session', { method: 'POST', body: fd });
+  if (r.ok) { $('key').value = ''; $('keyMsg').textContent = ''; toggle(true); }
+  else { const e = await r.json(); $('keyMsg').textContent = e.detail; $('keyMsg').className = 'msg err'; }
+};
+
+$('logout').onclick = async (e) => {
+  e.preventDefault();
+  await fetch('/api/session', { method: 'DELETE' });
+  toggle(false);
+};
+
+$('go').onclick = async () => {
+  const f = $('file').files[0];
+  if (!f) { $('msg').textContent = '请先选择 PDF 文件'; return; }
+  const fd = new FormData();
+  fd.append('file', f);
+  fd.append('model', $('model').value);
+  fd.append('lang_in', $('langIn').value);
+  fd.append('lang_out', $('langOut').value);
+  fd.append('pages', $('pages').value);
+  fd.append('output', $('output').value);
+
+  $('go').disabled = true;
+  $('msg').className = 'msg'; $('msg').textContent = '上传中…';
+  const r = await fetch('/api/translate', { method: 'POST', body: fd });
+  $('go').disabled = false;
+  if (!r.ok) {
+    const e = await r.json();
+    $('msg').textContent = e.detail; $('msg').className = 'msg err';
+    if (r.status === 401) toggle(false);
+    return;
+  }
+  $('msg').textContent = '已提交，进度见下方任务列表';
+  $('file').value = '';
+  refresh();
+};
+
+boot();
+</script>
+</body>
+</html>

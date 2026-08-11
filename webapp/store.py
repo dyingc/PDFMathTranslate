@@ -1,0 +1,119 @@
+"""SQLite-backed job records.
+
+Job state has to outlive both a browser refresh and a server restart, so the
+authoritative copy lives on disk. `progress`/`stage` are written back throttled
+(see `Store.progress`) — losing a second of progress on a crash is fine, losing
+the fact that a translation happened is not.
+"""
+
+import json
+import os
+import sqlite3
+import threading
+import time
+from pathlib import Path
+from typing import Optional
+
+DATA_DIR = Path(os.environ.get("PDF2ZH_WEBAPP_DATA")
+                or Path(__file__).parent / "data").expanduser().resolve()
+FILES_DIR = DATA_DIR / "files"
+DB_PATH = DATA_DIR / "jobs.sqlite"
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS jobs (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,      -- original filename stem, for display
+    model       TEXT NOT NULL,
+    lang_in     TEXT NOT NULL,
+    lang_out    TEXT NOT NULL,
+    pages       TEXT NOT NULL DEFAULT '',
+    output      TEXT NOT NULL,      -- mono | dual | both
+    status      TEXT NOT NULL,      -- queued | running | done | error | interrupted
+    progress    REAL NOT NULL DEFAULT 0,
+    stage       TEXT NOT NULL DEFAULT '',
+    error       TEXT NOT NULL DEFAULT '',
+    kinds       TEXT NOT NULL DEFAULT '[]',   -- JSON list of available downloads
+    created_at  REAL NOT NULL,
+    updated_at  REAL NOT NULL
+);
+"""
+
+_LIVE_STATES = ("queued", "running")
+
+
+class Store:
+    def __init__(self) -> None:
+        FILES_DIR.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        # check_same_thread=False + an explicit lock: the worker pool and the
+        # request handlers both touch this connection.
+        self._db = sqlite3.connect(DB_PATH, check_same_thread=False)
+        self._db.row_factory = sqlite3.Row
+        self._db.executescript(_SCHEMA)
+        self._db.commit()
+        self._last_write: dict = {}
+
+    # -- writes ---------------------------------------------------------------
+
+    def create(self, job_id: str, **fields) -> None:
+        now = time.time()
+        row = {"id": job_id, "status": "queued", "progress": 0.0,
+               "stage": "Queued", "error": "", "kinds": "[]",
+               "created_at": now, "updated_at": now, **fields}
+        cols = ",".join(row)
+        self._exec(f"INSERT INTO jobs ({cols}) VALUES ({','.join('?' * len(row))})",
+                   tuple(row.values()))
+
+    def update(self, job_id: str, **fields) -> None:
+        if "kinds" in fields:
+            fields["kinds"] = json.dumps(fields["kinds"])
+        fields["updated_at"] = time.time()
+        sets = ",".join(f"{k}=?" for k in fields)
+        self._exec(f"UPDATE jobs SET {sets} WHERE id=?",
+                   (*fields.values(), job_id))
+
+    def progress(self, job_id: str, progress: float, stage: str) -> None:
+        """Throttled progress write — the tqdm callback fires far too often."""
+        prev = self._last_write.get(job_id)
+        if prev and progress - prev[0] < 0.01 and stage == prev[1]:
+            return
+        self._last_write[job_id] = (progress, stage)
+        self.update(job_id, progress=progress, stage=stage, status="running")
+
+    def reap_stale(self) -> int:
+        """A restart kills any in-flight translation; nothing can resume it."""
+        cur = self._exec(
+            "UPDATE jobs SET status='interrupted', error='应用重启，任务已中断' "
+            f"WHERE status IN ({','.join('?' * len(_LIVE_STATES))})", _LIVE_STATES)
+        return cur.rowcount
+
+    def delete(self, job_id: str) -> None:
+        self._exec("DELETE FROM jobs WHERE id=?", (job_id,))
+
+    # -- reads ----------------------------------------------------------------
+
+    def get(self, job_id: str) -> Optional[dict]:
+        cur = self._exec("SELECT * FROM jobs WHERE id=?", (job_id,))
+        row = cur.fetchone()
+        return _to_dict(row) if row else None
+
+    def list(self, limit: int = 50) -> list:
+        cur = self._exec("SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?",
+                         (limit,))
+        return [_to_dict(r) for r in cur.fetchall()]
+
+    def _exec(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
+        with self._lock:
+            cur = self._db.execute(sql, params)
+            self._db.commit()
+            return cur
+
+
+def _to_dict(row: sqlite3.Row) -> dict:
+    d = dict(row)
+    d["kinds"] = json.loads(d["kinds"])
+    return d
+
+
+def job_dir(job_id: str) -> Path:
+    return FILES_DIR / job_id
