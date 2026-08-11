@@ -70,6 +70,33 @@ def _key_never_persisted():
     assert before == after, f"{cfg} 被改动了"
 
 
+@check("界面翻译覆盖所有语言且无缺漏")
+def _i18n_complete():
+    import re
+    from webapp.app import LANGUAGES, MODELS, OUTPUTS
+
+    src = (Path(__file__).parent / "static" / "i18n.js").read_text()
+    # Crude but dependency-free: one block per language, keys are bare idents.
+    blocks = re.findall(r'"([\w-]+)":\s*\{(.*?)\n  \}', src, re.S)
+    table = {lang: set(re.findall(r"^\s{4}(\w+):", body, re.M))
+             for lang, body in blocks}
+
+    missing_langs = set(LANGUAGES) - set(table)
+    assert not missing_langs, f"缺少界面语言: {sorted(missing_langs)}"
+
+    reference = table["zh"]
+    # Guard against the regex silently matching nothing, which would make every
+    # (empty) set compare equal and turn this check into a no-op.
+    assert len(reference) > 20, f"只解析到 {len(reference)} 个键，i18n.js 结构可能已改变"
+    for lang, keys in table.items():
+        assert keys == reference, \
+            f"{lang} 缺少 {sorted(reference - keys)}，多出 {sorted(keys - reference)}"
+
+    # Keys the server hands to the client must exist on the client side.
+    for key in list(OUTPUTS.values()) + [m["hint"] for m in MODELS.values()]:
+        assert key in reference, f"i18n 缺少服务端引用的键: {key}"
+
+
 @check("版面模型入口仍在")
 def _layout_model():
     from pdf2zh.doclayout import ModelInstance, OnnxModel

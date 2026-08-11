@@ -12,6 +12,8 @@
   - 应用重启 → 内存清空 → 需重新输入
   - 已禁用 pdf2zh 的配置落盘（见 `app.py` 顶部对 `ConfigManager._save_config` 的处理），
     否则 pdf2zh 会把 `DEEPSEEK_API_KEY` 写进 `~/.config/PDFMathTranslate/config.json`
+- 界面支持全部 10 种语言（与可翻译的目标语言相同），在首屏即可切换，
+  选择存服务端 `data/settings.json`，首次使用默认简体中文
 - 输出可选：纯译文（`-mono.pdf`）、原文/译文对照（`-dual.pdf`）或两者
 - 除 API Key 外的设置都是持久的：并发参数存服务端 `data/settings.json`，
   界面上的语言/模型/输出等选择存浏览器 localStorage
@@ -84,7 +86,7 @@ force-push。工作区不干净时脚本会直接拒绝执行；合并冲突时�
 .venv/bin/python -m webapp.smoke_test
 ```
 
-它不翻译、不联网，只检查本应用依赖的几个 pdf2zh 内部约定是否还成立——
+它不翻译、不联网，只检查本应用依赖的几个 pdf2zh 内部约定是否还成立，外加界面翻译的完整性——
 `translate()` 的参数、DeepSeek translator 的 envs 键名、产物命名，以及
 **API Key 确实没有落盘**。上游重构完全可能变基无冲突却把这些悄悄改坏。
 测试未通过时 `--push` 会拒绝推送。
@@ -96,7 +98,7 @@ force-push。工作区不干净时脚本会直接拒绝执行；合并冲突时�
 ```
 data/
   jobs.sqlite          # 任务记录
-  settings.json        # 并发等设置（不含 API Key）
+  settings.json        # 并发、界面语言等设置（不含 API Key）
   files/<job_id>/      # <名字>-mono.pdf / <名字>-dual.pdf
 ```
 

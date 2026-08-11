@@ -83,7 +83,7 @@ class Store:
     def reap_stale(self) -> int:
         """A restart kills any in-flight translation; nothing can resume it."""
         cur = self._exec(
-            "UPDATE jobs SET status='interrupted', error='应用重启，任务已中断' "
+            "UPDATE jobs SET status='interrupted', error='err_interrupted' "
             f"WHERE status IN ({','.join('?' * len(_LIVE_STATES))})", _LIVE_STATES)
         return cur.rowcount
 

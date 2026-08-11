@@ -34,9 +34,10 @@ from webapp.store import DATA_DIR, Store, job_dir  # noqa: E402
 
 BASE_DIR = Path(__file__).parent
 
+# `hint` is an i18n key resolved by the client; only the brand name is literal.
 MODELS = {
-    "deepseek-v4-flash": "DeepSeek V4 Flash (fast / cheap)",
-    "deepseek-v4-pro": "DeepSeek V4 Pro (higher quality)",
+    "deepseek-v4-flash": {"label": "DeepSeek V4 Flash", "hint": "model_hint_fast"},
+    "deepseek-v4-pro": {"label": "DeepSeek V4 Pro", "hint": "model_hint_quality"},
 }
 
 # Target languages, mirroring pdf2zh's own GUI language map.
@@ -53,11 +54,12 @@ LANGUAGES = {
     "it": "Italiano",
 }
 
-OUTPUTS = {
-    "both": "两者",
-    "mono": "纯译文",
-    "dual": "原文/译文对照",
-}
+# Values are i18n keys, not display text — the UI language is chosen client-side.
+OUTPUTS = {"both": "out_both", "mono": "out_mono", "dual": "out_dual"}
+
+# Interface languages == the languages we can translate into.
+UI_LANGS = list(LANGUAGES)
+DEFAULT_UI_LANG = "zh"
 
 
 # Everything except the API key is durable: settings you pass once stick around
@@ -93,7 +95,21 @@ except (OSError, ValueError):
 # product of the two — raise with the provider's rate limit in mind.
 WORKERS = _settings_int("workers", "WEBAPP_WORKERS", 2)
 LLM_THREADS = _settings_int("llm_threads", "WEBAPP_LLM_THREADS", 4)
-SETTINGS_PATH.write_text(json.dumps(_SETTINGS, indent=2))
+
+# The interface language is a saved preference like any other; it is what the
+# very first screen (API key entry) renders in, so it must be known before the
+# UI draws anything.
+UI_LANG = _SETTINGS.get("ui_lang") or DEFAULT_UI_LANG
+if UI_LANG not in UI_LANGS:
+    UI_LANG = DEFAULT_UI_LANG
+_SETTINGS["ui_lang"] = UI_LANG
+
+
+def _save_settings() -> None:
+    SETTINGS_PATH.write_text(json.dumps(_SETTINGS, indent=2, ensure_ascii=False))
+
+
+_save_settings()
 
 # The API key is the one thing that stays memory-only, by design.
 SESSIONS: Dict[str, str] = {}
@@ -131,7 +147,7 @@ def _shutdown() -> None:
 def _require_key(sid: Optional[str]) -> str:
     key = SESSIONS.get(sid or "")
     if not key:
-        raise HTTPException(status_code=401, detail="API key not set for this session")
+        raise HTTPException(status_code=401, detail="err_no_key")
     return key
 
 
@@ -142,21 +158,35 @@ def get_config(sid: Optional[str] = Cookie(None)):
         "languages": LANGUAGES,
         "outputs": OUTPUTS,
         "data_dir": str(DATA_DIR),
+        "ui_langs": UI_LANGS,
+        "ui_lang": UI_LANG,
         "workers": WORKERS,
         "llm_threads": LLM_THREADS,
         "has_key": bool(SESSIONS.get(sid or "")),
     }
 
 
+@app.post("/api/ui-lang")
+def set_ui_lang(lang: str = Form(...)):
+    global UI_LANG
+    if lang not in UI_LANGS:
+        raise HTTPException(status_code=400, detail="err_unknown_lang")
+    UI_LANG = _SETTINGS["ui_lang"] = lang
+    _save_settings()
+    return {"ok": True}
+
+
 @app.post("/api/session")
 def set_key(response: Response, api_key: str = Form(...)):
     api_key = api_key.strip()
     if not api_key:
-        raise HTTPException(status_code=400, detail="Empty API key")
+        raise HTTPException(status_code=400, detail="err_empty_key")
     try:
         OpenAI(api_key=api_key, base_url="https://api.deepseek.com").models.list()
     except Exception as exc:  # noqa: BLE001 - surface the provider error verbatim
-        raise HTTPException(status_code=400, detail=f"Key rejected by DeepSeek: {exc}")
+        # Code for the UI to translate, plus the provider's own words verbatim.
+        raise HTTPException(status_code=400,
+                            detail={"code": "err_key_rejected", "raw": str(exc)})
 
     sid = uuid.uuid4().hex
     SESSIONS[sid] = api_key
@@ -219,11 +249,11 @@ async def start_translate(
 ):
     api_key = _require_key(sid)
     if model not in MODELS:
-        raise HTTPException(status_code=400, detail="Unknown model")
+        raise HTTPException(status_code=400, detail="err_unknown_model")
     if output not in OUTPUTS:
-        raise HTTPException(status_code=400, detail="Unknown output type")
+        raise HTTPException(status_code=400, detail="err_unknown_output")
     if not (file.filename or "").lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported")
+        raise HTTPException(status_code=400, detail="err_pdf_only")
 
     job_id = uuid.uuid4().hex
     d = job_dir(job_id)
@@ -265,7 +295,7 @@ def list_jobs():
 def job_status(job_id: str):
     job = STORE.get(job_id)
     if not job:
-        raise HTTPException(status_code=404, detail="Unknown job")
+        raise HTTPException(status_code=404, detail="err_unknown_job")
     return job
 
 
@@ -273,9 +303,9 @@ def job_status(job_id: str):
 def delete_job(job_id: str):
     job = STORE.get(job_id)
     if not job:
-        raise HTTPException(status_code=404, detail="Unknown job")
+        raise HTTPException(status_code=404, detail="err_unknown_job")
     if job["status"] in ("queued", "running"):
-        raise HTTPException(status_code=409, detail="任务进行中，无法删除")
+        raise HTTPException(status_code=409, detail="err_job_running")
     shutil.rmtree(job_dir(job_id), ignore_errors=True)
     STORE.delete(job_id)
     return {"ok": True}
@@ -285,10 +315,10 @@ def delete_job(job_id: str):
 def download(job_id: str, kind: str):
     job = STORE.get(job_id)
     if not job or kind not in job["kinds"]:
-        raise HTTPException(status_code=404, detail="Not available")
+        raise HTTPException(status_code=404, detail="err_unknown_job")
     path = job_dir(job_id) / f"{job['name']}-{kind}.pdf"
     if not path.exists():
-        raise HTTPException(status_code=410, detail="文件已被删除")
+        raise HTTPException(status_code=410, detail="err_file_gone")
     return FileResponse(path, media_type="application/pdf", filename=path.name)
 
 
