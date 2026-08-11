@@ -84,6 +84,24 @@ if [ "$do_rebase" = 1 ] && [ "$branch" != "$MAIN" ]; then
     fi
 fi
 
+# A conflict-free rebase does not mean the app still works: it depends on a few
+# pdf2zh internals that upstream can change without ever touching webapp/.
+smoke_ok=1
+if [ -x .venv/bin/python ]; then
+    echo "==> 冒烟测试"
+    .venv/bin/python -m webapp.smoke_test || smoke_ok=0
+    if [ "$smoke_ok" = 0 ]; then
+        echo "冒烟测试未通过——上游改动可能已破坏本应用，请先修复再推送。" >&2
+    fi
+else
+    echo "（跳过冒烟测试：未找到 .venv）"
+fi
+
+if [ "$do_push" = 1 ] && [ "$smoke_ok" = 0 ]; then
+    echo "因冒烟测试失败，已跳过推送。" >&2
+    exit 1
+fi
+
 if [ "$do_push" = 1 ]; then
     echo "==> 推送 origin"
     git push origin "$MAIN"
