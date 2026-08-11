@@ -66,6 +66,18 @@ uv pip install --python .venv/bin/python "tencentcloud-sdk-python-tmt==3.0.1250"
 | DELETE | `/api/jobs/{id}` | 删除记录与文件（进行中的任务拒绝删除） |
 | GET | `/api/jobs/{id}/download/{mono\|dual}` | 下载结果 |
 
+## 同步上游
+
+```bash
+./webapp/sync-upstream.sh            # 更新 main，并把当前功能分支变基到它之上
+./webapp/sync-upstream.sh --push     # 顺带推送（功能分支用 --force-with-lease）
+./webapp/sync-upstream.sh --no-rebase
+```
+
+`main` 保持为上游的干净镜像（只允许快进），我们的改动作为其上的一薄层存在。
+工作区不干净时脚本会直接拒绝执行；变基冲突时会停在冲突现场，交给你
+`git rebase --continue` 或 `--abort`。
+
 ## 数据存放
 
 默认在 `webapp/data/`（已 gitignore），可用环境变量 `PDF2ZH_WEBAPP_DATA` 覆盖：
