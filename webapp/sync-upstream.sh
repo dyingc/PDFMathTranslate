@@ -3,12 +3,12 @@
 #
 #   ./webapp/sync-upstream.sh [--branch NAME] [--no-rebase] [--push]
 #
-#   --branch NAME  要变基的功能分支（默认：当前分支）
-#   --no-rebase    只更新 main，不动功能分支
-#   --push         成功后推送 main，并用 --force-with-lease 推送功能分支
+#   --branch NAME  额外变基到 main 的功能分支（默认：当前分支；在 main 上则跳过）
+#   --no-rebase    只更新 main
+#   --push         成功后推送 main（功能分支用 --force-with-lease）
 #
-# 为什么是 rebase 而不是 merge：我们的改动几乎全部在 webapp/ 下，是上游历史之上
-# 的一薄层。保持线性能让"我们改了什么"始终一目了然，也让将来给上游提 PR 更容易。
+# 我们的改动就住在 main 上（几乎全在 webapp/ 下）。上游用 merge 并入，这样永远
+# 不需要 force-push 默认分支。
 set -euo pipefail
 
 UPSTREAM_URL="https://github.com/PDFMathTranslate/PDFMathTranslate.git"
@@ -50,22 +50,25 @@ git remote get-url "$UPSTREAM" >/dev/null 2>&1 || {
     git remote add "$UPSTREAM" "$UPSTREAM_URL"
 }
 
+before="$(git rev-parse "$UPSTREAM/$MAIN" 2>/dev/null || echo "")"
+
 echo "==> 拉取 $UPSTREAM"
 git fetch --prune "$UPSTREAM"
 
-before="$(git rev-parse "$MAIN")"
-echo "==> 更新 $MAIN → $UPSTREAM/$MAIN"
+echo "==> 合并 $UPSTREAM/$MAIN 到 $MAIN"
 git checkout -q "$MAIN"
-# Fast-forward only: main is meant to be a clean mirror of upstream. If this
-# fails, someone committed onto main directly and that needs a human decision.
-if ! git merge --ff-only "$UPSTREAM/$MAIN"; then
-    echo "错误：$MAIN 无法快进到 $UPSTREAM/$MAIN（本地有独立提交）。" >&2
-    echo "请手动处理，例如：git rebase $UPSTREAM/$MAIN" >&2
+# Merge, not rebase: main carries our own commits, and rebasing it would mean
+# force-pushing the fork's default branch on every sync. A merge commit is a
+# cheap price for never rewriting published history.
+if ! git merge --no-edit "$UPSTREAM/$MAIN"; then
+    echo >&2
+    echo "合并冲突。解决后执行 git commit，或 git merge --abort 放弃本次同步。" >&2
+    trap - EXIT          # leave the merge in progress for the user
     exit 1
 fi
-after="$(git rev-parse "$MAIN")"
+after="$(git rev-parse "$UPSTREAM/$MAIN")"
 
-if [ "$before" = "$after" ]; then
+if [ -z "$before" ] || [ "$before" = "$after" ]; then
     echo "已是最新，上游没有新提交。"
 else
     echo "上游新提交："

@@ -69,14 +69,14 @@ uv pip install --python .venv/bin/python "tencentcloud-sdk-python-tmt==3.0.1250"
 ## 同步上游
 
 ```bash
-./webapp/sync-upstream.sh            # 更新 main，并把当前功能分支变基到它之上
-./webapp/sync-upstream.sh --push     # 顺带推送（功能分支用 --force-with-lease）
-./webapp/sync-upstream.sh --no-rebase
+./webapp/sync-upstream.sh            # 把 upstream/main 合并进 main
+./webapp/sync-upstream.sh --push     # 顺带推送
 ```
 
-`main` 保持为上游的干净镜像（只允许快进），我们的改动作为其上的一薄层存在。
-工作区不干净时脚本会直接拒绝执行；变基冲突时会停在冲突现场，交给你
-`git rebase --continue` 或 `--abort`。
+本应用直接住在 `main` 上，上游改动用 **merge** 并入——这样默认分支永远不需要
+force-push。工作区不干净时脚本会直接拒绝执行；合并冲突时会停在冲突现场，交给你
+`git commit` 或 `git merge --abort`。（如果你另开了功能分支，脚本会把它变基到
+更新后的 `main` 上。）
 
 变基结束后会自动跑一次冒烟测试（也可单独执行）：
 
