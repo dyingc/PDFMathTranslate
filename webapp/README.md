@@ -78,6 +78,17 @@ uv pip install --python .venv/bin/python "tencentcloud-sdk-python-tmt==3.0.1250"
 工作区不干净时脚本会直接拒绝执行；变基冲突时会停在冲突现场，交给你
 `git rebase --continue` 或 `--abort`。
 
+变基结束后会自动跑一次冒烟测试（也可单独执行）：
+
+```bash
+.venv/bin/python -m webapp.smoke_test
+```
+
+它不翻译、不联网，只检查本应用依赖的几个 pdf2zh 内部约定是否还成立——
+`translate()` 的参数、DeepSeek translator 的 envs 键名、产物命名，以及
+**API Key 确实没有落盘**。上游重构完全可能变基无冲突却把这些悄悄改坏。
+测试未通过时 `--push` 会拒绝推送。
+
 ## 数据存放
 
 默认在 `webapp/data/`（已 gitignore），可用环境变量 `PDF2ZH_WEBAPP_DATA` 覆盖：
