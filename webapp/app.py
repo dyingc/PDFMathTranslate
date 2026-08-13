@@ -205,6 +205,7 @@ def get_config(sid: Optional[str] = Cookie(None)):
         "outputs": OUTPUTS,
         "data_dir": str(DATA_DIR),
         "efforts": EFFORTS,
+        "resumable": list(RESUMABLE),
         "default_effort": DEFAULT_EFFORT,
         "pricing": _pricing_now(),
         "ui_langs": UI_LANGS,
@@ -323,10 +324,12 @@ def _run_job(job_id: str, src: Path, api_key: str, model: str, lang_in: str,
     finally:
         # A failed job still burned tokens; record what it spent either way.
         usage = METER.pop(job_id)
-        STORE.update(job_id, tokens_in_hit=usage["tokens_in_hit"],
-                     tokens_in_miss=usage["tokens_in_miss"],
-                     tokens_out=usage["tokens_out"], calls=usage["calls"],
-                     cost=round(usage["cost"], 6), priced=int(usage["priced"]))
+        STORE.add_usage(job_id, tokens_in_hit=usage["tokens_in_hit"],
+                        tokens_in_miss=usage["tokens_in_miss"],
+                        tokens_out=usage["tokens_out"], calls=usage["calls"],
+                        cost=round(usage["cost"], 6))
+        if not usage["priced"]:
+            STORE.update(job_id, priced=0)
 
 
 @app.post("/api/translate")
@@ -356,11 +359,57 @@ async def start_translate(
     src = d / os.path.basename(file.filename)
     src.write_bytes(await file.read())
 
-    STORE.create(job_id, name=src.stem, model=model, lang_in=lang_in,
-                 lang_out=lang_out, pages=pages, output=output, effort=effort)
-    POOL.submit(_run_job, job_id, src, api_key, model, lang_in, lang_out,
-                _parse_pages(pages), output, effort)
+    STORE.create(job_id, name=src.stem, src_name=src.name, model=model,
+                 lang_in=lang_in, lang_out=lang_out, pages=pages, output=output,
+                 effort=effort)
+    _submit(STORE.get(job_id), src, api_key)
     return {"job_id": job_id}
+
+
+def _source_of(job: dict) -> Optional[Path]:
+    """The uploaded PDF, if it is still on disk."""
+    d = job_dir(job["id"])
+    if job.get("src_name"):
+        path = d / job["src_name"]
+        return path if path.exists() else None
+    # Jobs created before src_name existed: the upload is the only PDF that is
+    # not one of our two outputs.
+    outputs = {f"{job['name']}-mono.pdf", f"{job['name']}-dual.pdf"}
+    found = [f for f in d.glob("*.pdf") if f.name not in outputs] if d.exists() else []
+    return found[0] if len(found) == 1 else None
+
+
+def _submit(job: dict, src: Path, api_key: str) -> None:
+    POOL.submit(_run_job, job["id"], src, api_key, job["model"], job["lang_in"],
+                job["lang_out"], _parse_pages(job["pages"]), job["output"],
+                job["effort"])
+
+
+RESUMABLE = ("interrupted", "error")
+
+
+@app.post("/api/jobs/{job_id}/resume")
+def resume_job(job_id: str, sid: Optional[str] = Cookie(None)):
+    """Re-run an interrupted or failed job.
+
+    Not a byte-level resume — pdf2zh has no such concept. It re-runs the same
+    job, and pdf2zh's paragraph cache means everything already translated comes
+    back for free, so in practice only the unfinished part costs anything.
+    """
+    api_key = _require_key(sid)
+    job = STORE.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="err_unknown_job")
+    if job["status"] not in RESUMABLE:
+        raise HTTPException(status_code=409, detail="err_not_resumable")
+    src = _source_of(job)
+    if src is None:
+        raise HTTPException(status_code=410, detail="err_no_source")
+
+    STORE.update(job_id, status="queued", stage="Queued", error="", progress=0.0,
+                 src_name=src.name)
+    _submit(job, src, api_key)
+    return {"ok": True}
 
 
 def _parse_pages(spec: str) -> Optional[list]:

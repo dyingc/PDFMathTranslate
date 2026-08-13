@@ -242,8 +242,13 @@ function job(j) {
     const e = j.error || '';
     body = `<div class="msg err">${esc(e.startsWith('err_') ? t(e) : e || t('st_error'))}</div>`;
   }
-  const del = LIVE.includes(j.status) ? ''
-    : `<button class="del" onclick="del('${j.id}')">${esc(t('delete'))}</button>`;
+  let actions = '';
+  if (!LIVE.includes(j.status)) {
+    if (cfg.resumable.includes(j.status)) {
+      actions += `<button class="del" onclick="resume('${j.id}')">${esc(t('resume'))}</button>`;
+    }
+    actions += `<button class="del" onclick="del('${j.id}')">${esc(t('delete'))}</button>`;
+  }
   return `<div class="job">
     <div class="job-head">
       <span class="job-name">${esc(j.name)}.pdf</span>
@@ -251,7 +256,7 @@ function job(j) {
     </div>
     <div class="hint">${esc(cfg.languages[j.lang_in] || j.lang_in)} → ${esc(cfg.languages[j.lang_out] || j.lang_out)} · ${esc(j.model)} · ${esc(t('effort_' + (j.effort || 'high')))}${j.pages ? ' · p.' + esc(j.pages) : ''}</div>
     ${cost(j)}
-    ${body}${del}
+    ${body}${actions}
   </div>`;
 }
 
@@ -266,6 +271,17 @@ function cost(j) {
         in_: kilo(j.tokens_in_hit + j.tokens_in_miss), hit: kilo(j.tokens_in_hit),
         out: kilo(j.tokens_out), calls: j.calls });
   return `<div class="hint">${esc(line)}</div>`;
+}
+
+// Re-runs the job; pdf2zh's paragraph cache means the finished part is free.
+async function resume(id) {
+  const r = await fetch(`/api/jobs/${id}/resume`, { method: 'POST' });
+  if (!r.ok) {
+    const e = await errOf(r);
+    showMsg('msg', e.code, e.raw, true);
+    if (r.status === 401) toggle(false);
+  }
+  refresh();
 }
 
 async function del(id) {

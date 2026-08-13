@@ -65,6 +65,9 @@ const I18N = {
     llm_threads: "每个文件的 LLM 线程数",
     saved: "已保存",
     err_out_of_range: "数值超出允许范围",
+    resume: "继续",
+    err_not_resumable: "该任务无需继续",
+    err_no_source: "源文件已不存在，无法继续",
   },
   "zh-TW": {
     title: "PDF 翻譯（保留公式排版）",
@@ -129,6 +132,9 @@ const I18N = {
     llm_threads: "每個檔案的 LLM 執行緒數",
     saved: "已儲存",
     err_out_of_range: "數值超出允許範圍",
+    resume: "繼續",
+    err_not_resumable: "該任務無需繼續",
+    err_no_source: "原始檔已不存在，無法繼續",
   },
   "en": {
     title: "PDF Translation (formulas preserved)",
@@ -193,6 +199,9 @@ const I18N = {
     llm_threads: "LLM threads per file",
     saved: "Saved",
     err_out_of_range: "Value out of range",
+    resume: "Resume",
+    err_not_resumable: "This job does not need resuming",
+    err_no_source: "The source file is gone; cannot resume",
   },
   "ja": {
     title: "PDF 翻訳（数式レイアウトを保持）",
@@ -257,6 +266,9 @@ const I18N = {
     llm_threads: "ファイルあたりの LLM スレッド数",
     saved: "保存しました",
     err_out_of_range: "値が範囲外です",
+    resume: "再開",
+    err_not_resumable: "このジョブは再開の必要がありません",
+    err_no_source: "元ファイルが見つからないため再開できません",
   },
   "ko": {
     title: "PDF 번역 (수식 레이아웃 유지)",
@@ -321,6 +333,9 @@ const I18N = {
     llm_threads: "파일당 LLM 스레드 수",
     saved: "저장됨",
     err_out_of_range: "값이 허용 범위를 벗어났습니다",
+    resume: "이어서 진행",
+    err_not_resumable: "이 작업은 이어서 진행할 필요가 없습니다",
+    err_no_source: "원본 파일이 없어 이어서 진행할 수 없습니다",
   },
   "fr": {
     title: "Traduction de PDF (mise en page des formules préservée)",
@@ -385,6 +400,9 @@ const I18N = {
     llm_threads: "Threads LLM par fichier",
     saved: "Enregistré",
     err_out_of_range: "Valeur hors limites",
+    resume: "Reprendre",
+    err_not_resumable: "Cette tâche n'a pas besoin d'être reprise",
+    err_no_source: "Le fichier source a disparu ; reprise impossible",
   },
   "de": {
     title: "PDF-Übersetzung (Formellayout bleibt erhalten)",
@@ -449,6 +467,9 @@ const I18N = {
     llm_threads: "LLM-Threads je Datei",
     saved: "Gespeichert",
     err_out_of_range: "Wert außerhalb des zulässigen Bereichs",
+    resume: "Fortsetzen",
+    err_not_resumable: "Dieser Auftrag muss nicht fortgesetzt werden",
+    err_no_source: "Die Quelldatei fehlt; Fortsetzen nicht möglich",
   },
   "ru": {
     title: "Перевод PDF (вёрстка формул сохраняется)",
@@ -513,6 +534,9 @@ const I18N = {
     llm_threads: "Потоков LLM на файл",
     saved: "Сохранено",
     err_out_of_range: "Значение вне допустимого диапазона",
+    resume: "Продолжить",
+    err_not_resumable: "Эту задачу не нужно продолжать",
+    err_no_source: "Исходный файл отсутствует, продолжить нельзя",
   },
   "es": {
     title: "Traducción de PDF (se conserva la maquetación de las fórmulas)",
@@ -577,6 +601,9 @@ const I18N = {
     llm_threads: "Hilos LLM por archivo",
     saved: "Guardado",
     err_out_of_range: "Valor fuera de rango",
+    resume: "Reanudar",
+    err_not_resumable: "Esta tarea no necesita reanudarse",
+    err_no_source: "El archivo original ya no existe; no se puede reanudar",
   },
   "it": {
     title: "Traduzione di PDF (impaginazione delle formule preservata)",
@@ -641,5 +668,8 @@ const I18N = {
     llm_threads: "Thread LLM per file",
     saved: "Salvato",
     err_out_of_range: "Valore fuori intervallo",
+    resume: "Riprendi",
+    err_not_resumable: "Questa attività non ha bisogno di essere ripresa",
+    err_no_source: "Il file di origine non esiste più; impossibile riprendere",
   },
 };

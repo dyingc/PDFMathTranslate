@@ -23,6 +23,7 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
     id          TEXT PRIMARY KEY,
     name        TEXT NOT NULL,      -- original filename stem, for display
+    src_name    TEXT NOT NULL DEFAULT '',  -- uploaded file name, kept for resume
     model       TEXT NOT NULL,
     lang_in     TEXT NOT NULL,
     lang_out    TEXT NOT NULL,
@@ -51,6 +52,7 @@ _LIVE_STATES = ("queued", "running")
 
 # Columns added to `jobs` after the first release, applied on open.
 _ADDED_COLUMNS = {
+    "src_name": "TEXT NOT NULL DEFAULT ''",
     "effort": "TEXT NOT NULL DEFAULT 'high'",
     "tokens_in_hit": "INTEGER NOT NULL DEFAULT 0",
     "tokens_in_miss": "INTEGER NOT NULL DEFAULT 0",
@@ -99,6 +101,13 @@ class Store:
         sets = ",".join(f"{k}=?" for k in fields)
         self._exec(f"UPDATE jobs SET {sets} WHERE id=?",
                    (*fields.values(), job_id))
+
+    def add_usage(self, job_id: str, **deltas) -> None:
+        """Accumulate token/cost counters — a resumed job spends on top of what
+        its earlier run already spent, so these must add, not overwrite."""
+        sets = ",".join(f"{k}={k}+?" for k in deltas)
+        self._exec(f"UPDATE jobs SET {sets}, updated_at=? WHERE id=?",
+                   (*deltas.values(), time.time(), job_id))
 
     def progress(self, job_id: str, progress: float, stage: str) -> None:
         """Throttled progress write — the tqdm callback fires far too often."""

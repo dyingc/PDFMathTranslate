@@ -84,6 +84,8 @@ def _i18n_complete():
     missing_langs = set(LANGUAGES) - set(table)
     assert not missing_langs, f"缺少界面语言: {sorted(missing_langs)}"
 
+    values = {lang: dict(re.findall(r'^\s{4}(\w+): "((?:[^"\\]|\\.)*)"', body, re.M))
+              for lang, body in blocks}
     reference = table["zh"]
     # Guard against the regex silently matching nothing, which would make every
     # (empty) set compare equal and turn this check into a no-op.
@@ -91,6 +93,16 @@ def _i18n_complete():
     for lang, keys in table.items():
         assert keys == reference, \
             f"{lang} 缺少 {sorted(reference - keys)}，多出 {sorted(keys - reference)}"
+
+    # A translation that drops a placeholder silently loses information at
+    # runtime, and key-presence alone would not catch it.
+    for key, text in values["zh"].items():
+        want = set(re.findall(r"\{(\w+)\}", text))
+        for lang, texts in values.items():
+            got = set(re.findall(r"\{(\w+)\}", texts.get(key, "")))
+            assert got == want, f"{lang}.{key} 占位符不匹配：期望 {want or '无'}，实际 {got or '无'}"
+        assert all(texts.get(key, "").strip() for texts in values.values()), \
+            f"{key} 存在空翻译"
 
     # Keys the server hands to the client must exist on the client side.
     for key in list(OUTPUTS.values()) + [m["hint"] for m in MODELS.values()]:
