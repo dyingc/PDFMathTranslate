@@ -7,7 +7,9 @@ in-memory-only API key handling.
 
 import json
 import os
+import threading
 import time
+from contextlib import contextmanager
 import shutil
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -117,10 +119,48 @@ def _save_settings() -> None:
 
 _save_settings()
 
+# Bounds for the values the UI is allowed to set.
+LIMITS = {"workers": (1, 16), "llm_threads": (1, 32)}
+
+
+class Gate:
+    """A semaphore whose capacity can change while jobs are in flight.
+
+    A fixed-size thread pool cannot be resized, and swapping pools would strand
+    queued jobs. Gating execution instead means raising the limit releases
+    waiting jobs immediately, and lowering it simply stops new ones from
+    starting as the running ones finish.
+    """
+
+    def __init__(self, limit: int) -> None:
+        self._cv = threading.Condition()
+        self._limit = limit
+        self._active = 0
+
+    def set_limit(self, limit: int) -> None:
+        with self._cv:
+            self._limit = limit
+            self._cv.notify_all()
+
+    @contextmanager
+    def slot(self):
+        with self._cv:
+            self._cv.wait_for(lambda: self._active < self._limit)
+            self._active += 1
+        try:
+            yield
+        finally:
+            with self._cv:
+                self._active -= 1
+                self._cv.notify_all()
+
+
 # The API key is the one thing that stays memory-only, by design.
 SESSIONS: Dict[str, str] = {}
 STORE = Store()
-POOL = ThreadPoolExecutor(max_workers=WORKERS)
+GATE = Gate(WORKERS)
+# Sized to the maximum the UI allows; the gate, not the pool, sets concurrency.
+POOL = ThreadPoolExecutor(max_workers=LIMITS["workers"][1])
 
 app = FastAPI(title="PDF Translator (DeepSeek)")
 
@@ -171,8 +211,24 @@ def get_config(sid: Optional[str] = Cookie(None)):
         "ui_lang": UI_LANG,
         "workers": WORKERS,
         "llm_threads": LLM_THREADS,
+        "limits": LIMITS,
         "has_key": bool(SESSIONS.get(sid or "")),
     }
+
+
+@app.post("/api/settings")
+def set_settings(workers: int = Form(...), llm_threads: int = Form(...)):
+    global WORKERS, LLM_THREADS
+    for name, value in (("workers", workers), ("llm_threads", llm_threads)):
+        low, high = LIMITS[name]
+        if not low <= value <= high:
+            raise HTTPException(status_code=400, detail="err_out_of_range")
+    WORKERS, LLM_THREADS = workers, llm_threads
+    _SETTINGS.update(workers=workers, llm_threads=llm_threads)
+    _save_settings()
+    # Takes effect immediately: waiting jobs start, or new ones stop starting.
+    GATE.set_limit(workers)
+    return {"ok": True}
 
 
 @app.post("/api/ui-lang")
@@ -237,21 +293,24 @@ def _run_job(job_id: str, src: Path, api_key: str, model: str, lang_in: str,
 
     METER.start(job_id)
     try:
-        STORE.update(job_id, status="running", stage="Translating")
-        out_dir = src.parent
-        translate(
-            files=[str(src)],
-            output=str(out_dir),
-            pages=pages,
-            lang_in=lang_in,
-            lang_out=lang_out,
-            service=f"deepseek:{model}",
-            thread=LLM_THREADS,
-            callback=on_progress,
-            model=ModelInstance.value,
-            envs={"DEEPSEEK_API_KEY": api_key, "DEEPSEEK_MODEL": model,
-                  "DEEPSEEK_EFFORT": effort, "DEEPSEEK_JOB_ID": job_id},
-        )
+        # Wait here, not in the pool: the job stays visibly "queued" until a
+        # concurrency slot frees up, and the limit can change while it waits.
+        with GATE.slot():
+            STORE.update(job_id, status="running", stage="Translating")
+            out_dir = src.parent
+            translate(
+                files=[str(src)],
+                output=str(out_dir),
+                pages=pages,
+                lang_in=lang_in,
+                lang_out=lang_out,
+                service=f"deepseek:{model}",
+                thread=LLM_THREADS,      # read now, so changes apply to new jobs
+                callback=on_progress,
+                model=ModelInstance.value,
+                envs={"DEEPSEEK_API_KEY": api_key, "DEEPSEEK_MODEL": model,
+                      "DEEPSEEK_EFFORT": effort, "DEEPSEEK_JOB_ID": job_id},
+            )
         # pdf2zh always writes both variants; keep only what was asked for.
         kinds = ["mono", "dual"] if output == "both" else [output]
         for unwanted in {"mono", "dual"} - set(kinds):

@@ -46,13 +46,24 @@ uv pip install --python .venv/bin/python "tencentcloud-sdk-python-tmt==3.0.1250"
 
 ### 并发
 
+两个并发参数在**页面顶部直接可调**（与界面语言并列），改完立即生效并写入
+`data/settings.json`：
+
+- **同时翻译的文件数**（1-16）：调大立刻放行正在排队的任务；调小不会打断
+  正在跑的，只是不再启动新的
+- **每个文件的 LLM 线程数**（1-32）：对新开始的任务生效
+
+也可以在启动时指定，作为首次运行的初始值：
+
 ```bash
-./webapp/start.sh -w 4 -t 8     # 4 个任务并行，每个任务 8 个 LLM 线程
+./webapp/start.sh -w 4 -t 8
 ```
 
-打给 DeepSeek 的并发请求上限是 `workers × llm-threads`，调大前先确认账号的速率限制；
-版面分析是 CPU 密集的，任务并发过高会互相抢核。等价的环境变量是 `WEBAPP_WORKERS` /
-`WEBAPP_LLM_THREADS`。**设过一次就会记在 `data/settings.json` 里**，之后不带参数启动也生效。
+等价环境变量 `WEBAPP_WORKERS` / `WEBAPP_LLM_THREADS`。优先级是
+环境变量 > 上次保存的值 > 默认值（2 / 4）。
+
+打给 DeepSeek 的并发请求上限是两者相乘，调大前先确认账号的速率限制；
+版面分析是 CPU 密集的，任务并发过高会互相抢核。
 
 打开 http://127.0.0.1:8077 ，填入 DeepSeek API Key（https://platform.deepseek.com/api_keys）即可。
 

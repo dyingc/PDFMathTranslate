@@ -31,14 +31,17 @@
   .job-name { font-weight: 600; overflow-wrap:anywhere; }
   .del { width:auto; background:none; color:var(--muted); font-size:12px; padding:2px 6px; }
   code { font-size: 12px; overflow-wrap: anywhere; }
-  #uiLangBox { max-width: 240px; margin-left: auto; }
+  #topBar { margin-bottom: 4px; }
+  #topBar input, #topBar select { font-size: 14px; }
 </style>
 </head>
 <body>
-<div id="uiLangBox" class="field">
-  <label for="uiLang" data-i18n="ui_lang"></label>
-  <select id="uiLang"></select>
+<div id="topBar" class="row">
+  <div class="field"><label for="uiLang" data-i18n="ui_lang"></label><select id="uiLang"></select></div>
+  <div class="field"><label for="workers" data-i18n="workers"></label><input id="workers" type="number" min="1"></div>
+  <div class="field"><label for="llmThreads" data-i18n="llm_threads"></label><input id="llmThreads" type="number" min="1"></div>
 </div>
+<div class="msg" id="topMsg" style="margin-top:-8px"></div>
 
 <h1 data-i18n="title"></h1>
 <p class="sub" data-i18n="subtitle"></p>
@@ -106,10 +109,30 @@ async function boot() {
     applyI18n();
     await fetch('/api/ui-lang', { method: 'POST', body: form({ lang }) });
   };
+  $('workers').max = cfg.limits.workers[1];
+  $('llmThreads').max = cfg.limits.llm_threads[1];
+  $('workers').value = cfg.workers;
+  $('llmThreads').value = cfg.llm_threads;
+  for (const id of ['workers', 'llmThreads']) $(id).addEventListener('change', saveSettings);
   applyI18n();
   restorePrefs();
   toggle(cfg.has_key);
   refresh();
+}
+
+// Concurrency is a server setting: saved to disk and applied to running jobs.
+async function saveSettings() {
+  const body = form({ workers: $('workers').value, llm_threads: $('llmThreads').value });
+  const r = await fetch('/api/settings', { method: 'POST', body });
+  if (r.ok) {
+    cfg.workers = +$('workers').value; cfg.llm_threads = +$('llmThreads').value;
+    showMsg('topMsg', 'saved', '', false);
+    setTimeout(() => showMsg('topMsg', null), 1500);
+  } else {
+    const e = await errOf(r);
+    showMsg('topMsg', e.code, e.raw, true);
+    $('workers').value = cfg.workers; $('llmThreads').value = cfg.llm_threads;
+  }
 }
 
 // Re-renders every piece of text, including the API-key screen and the job list.
@@ -129,10 +152,7 @@ function applyI18n() {
 
   // Escape first, then swap the placeholders for markup - never the other way round.
   $('hints').innerHTML =
-    esc(t('hint_files')).replace('{dir}', `<code>${esc(cfg.data_dir)}</code>`)
-    + '<br>' +
-    esc(t('hint_conc')).replace('{conc}', esc(`${cfg.workers} × ${cfg.llm_threads}`))
-                       .replace('{cmd}', '<code>./webapp/start.sh -w N -t N</code>');
+    esc(t('hint_files')).replace('{dir}', `<code>${esc(cfg.data_dir)}</code>`);
 
   if (lastMsg) showMsg(lastMsg.el, lastMsg.key, lastMsg.raw, lastMsg.isErr);
   render();
