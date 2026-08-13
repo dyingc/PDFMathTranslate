@@ -63,9 +63,13 @@
   </div>
   <div class="row">
     <div class="field"><label for="model" data-i18n="model"></label><select id="model"></select></div>
-    <div class="field"><label for="pages" data-i18n="pages"></label><input id="pages" data-i18n-ph="pages_ph"></div>
+    <div class="field"><label for="effort" data-i18n="effort"></label><select id="effort"></select></div>
   </div>
-  <div class="field"><label for="output" data-i18n="output"></label><select id="output"></select></div>
+  <div class="hint" id="priceHint" style="margin:-6px 0 12px"></div>
+  <div class="row">
+    <div class="field"><label for="pages" data-i18n="pages"></label><input id="pages" data-i18n-ph="pages_ph"></div>
+    <div class="field"><label for="output" data-i18n="output"></label><select id="output"></select></div>
+  </div>
   <button id="go" data-i18n="start"></button>
   <div class="msg" id="msg"></div>
   <div style="margin-top:10px"><a href="#" id="logout" class="hint" data-i18n="clear_key"></a></div>
@@ -118,6 +122,8 @@ function applyI18n() {
   fillKeep($('model'), Object.entries(cfg.models)
     .map(([v, m]) => [v, `${m.label} · ${t(m.hint)}`]));
   fillKeep($('output'), Object.entries(cfg.outputs).map(([v, k]) => [v, t(k)]));
+  fillKeep($('effort'), cfg.efforts.map(e => [e, t('effort_' + e)]));
+  renderPrice();
   fillKeep($('langIn'), Object.entries(cfg.languages));
   fillKeep($('langOut'), Object.entries(cfg.languages));
 
@@ -130,6 +136,17 @@ function applyI18n() {
 
   if (lastMsg) showMsg(lastMsg.el, lastMsg.key, lastMsg.raw, lastMsg.isErr);
   render();
+}
+
+// Rates depend on the model and on whether we are in peak hours right now.
+function renderPrice() {
+  const p = cfg.pricing, m = $('model').value, r = p.rates[m];
+  if (!r) { $('priceHint').textContent = ''; return; }
+  const money = v => `${p.symbol}${v}`;
+  $('priceHint').textContent = t('price_hint', {
+    period: t('period_' + p.period), model: cfg.models[m].label,
+    miss: money(r.cache_miss), out: money(r.output), hit: money(r.cache_hit),
+  }) + ' · ' + t('price_note');
 }
 
 // Repopulate a <select> without losing the current selection.
@@ -154,7 +171,7 @@ async function errOf(resp) {
 }
 
 // --- form preferences (not secrets) -----------------------------------------
-const PREF_KEYS = ['model', 'output', 'langIn', 'langOut', 'pages'];
+const PREF_KEYS = ['model', 'effort', 'output', 'langIn', 'langOut', 'pages'];
 function restorePrefs() {
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem('prefs') || '{}'); } catch (e) {}
@@ -164,9 +181,12 @@ function restorePrefs() {
     if (el.tagName === 'SELECT' && ![...el.options].some(o => o.value === saved[k])) continue;
     el.value = saved[k];
   }
+  if (!saved.effort) $('effort').value = cfg.default_effort;
   if (!saved.langIn) $('langIn').value = 'en';
   if (!saved.langOut) $('langOut').value = 'zh';
   for (const k of PREF_KEYS) $(k).addEventListener('change', savePrefs);
+  $('model').addEventListener('change', renderPrice);
+  renderPrice();   // the restored model may differ from the default
 }
 function savePrefs() {
   localStorage.setItem('prefs',
@@ -209,9 +229,23 @@ function job(j) {
       <span class="job-name">${esc(j.name)}.pdf</span>
       <span class="hint">${esc(t('st_' + j.status))} · ${esc(when)}</span>
     </div>
-    <div class="hint">${esc(cfg.languages[j.lang_in] || j.lang_in)} → ${esc(cfg.languages[j.lang_out] || j.lang_out)} · ${esc(j.model)}${j.pages ? ' · p.' + esc(j.pages) : ''}</div>
+    <div class="hint">${esc(cfg.languages[j.lang_in] || j.lang_in)} → ${esc(cfg.languages[j.lang_out] || j.lang_out)} · ${esc(j.model)} · ${esc(t('effort_' + (j.effort || 'high')))}${j.pages ? ' · p.' + esc(j.pages) : ''}</div>
+    ${cost(j)}
     ${body}${del}
   </div>`;
+}
+
+const kilo = n => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
+
+function cost(j) {
+  if (!j.calls) return '';
+  const p = cfg.pricing;
+  const money = `${p.symbol}${j.cost < 0.01 ? j.cost.toFixed(4) : j.cost.toFixed(2)}`;
+  const line = (j.priced ? t('cost_approx', { cost: money }) + ' · ' : '')
+    + t('tokens_stat', {
+        in_: kilo(j.tokens_in_hit + j.tokens_in_miss), hit: kilo(j.tokens_in_hit),
+        out: kilo(j.tokens_out), calls: j.calls });
+  return `<div class="hint">${esc(line)}</div>`;
 }
 
 async function del(id) {
@@ -239,7 +273,7 @@ $('go').onclick = async () => {
   if (!f) { showMsg('msg', 'pick_file', '', true); return; }
   const fd = form({
     model: $('model').value, lang_in: $('langIn').value, lang_out: $('langOut').value,
-    pages: $('pages').value, output: $('output').value,
+    pages: $('pages').value, output: $('output').value, effort: $('effort').value,
   });
   fd.append('file', f);
 

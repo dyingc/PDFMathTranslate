@@ -97,6 +97,36 @@ def _i18n_complete():
         assert key in reference, f"i18n 缺少服务端引用的键: {key}"
 
 
+@check("pdf2zh 仍会解析到我们带计量的 translator")
+def _translator_installed():
+    import webapp.app  # noqa: F401 - installs the subclass
+    from pdf2zh import converter
+    from webapp.translator import MeteredDeepseekTranslator
+
+    assert converter.DeepseekTranslator is MeteredDeepseekTranslator
+    assert MeteredDeepseekTranslator.name == "deepseek"
+    # The class list in TranslateConverter.__init__ is what actually picks it.
+    src = inspect.getsource(converter.TranslateConverter.__init__)
+    assert "DeepseekTranslator" in src, "converter 不再按模块全局名解析 translator"
+
+
+@check("价格表覆盖所有模型且档位有序")
+def _pricing_table():
+    from webapp.app import MODELS
+    from webapp.pricing import TABLE
+
+    assert TABLE.regimes, "价格表为空"
+    froms = [r["_from"] for r in TABLE.regimes]
+    assert froms == sorted(froms), "regimes 未按生效时间排序"
+    for regime in TABLE.regimes:
+        for model in MODELS:
+            rates = regime["rates"].get(model)
+            assert rates, f"{regime['effective_from']} 缺少 {model} 的价格"
+            assert "off_peak" in rates, f"{model} 缺少 off_peak 价格"
+            for period in rates.values():
+                assert set(period) == {"cache_hit", "cache_miss", "output"}, period
+
+
 @check("版面模型入口仍在")
 def _layout_model():
     from pdf2zh.doclayout import ModelInstance, OnnxModel

@@ -14,6 +14,9 @@
     否则 pdf2zh 会把 `DEEPSEEK_API_KEY` 写进 `~/.config/PDFMathTranslate/config.json`
 - 界面支持全部 10 种语言（与可翻译的目标语言相同），在首屏即可切换，
   选择存服务端 `data/settings.json`，首次使用默认简体中文
+- 可选思考强度（`off` / `low` / `high` / `max`，对应 DeepSeek 的 `thinking` 与
+  `reasoning_effort`），默认 `high` 与 API 默认行为一致
+- 每个任务显示实际 token 用量与费用（人民币），按**每次调用当时的价格**累计
 - 输出可选：纯译文（`-mono.pdf`）、原文/译文对照（`-dual.pdf`）或两者
 - 除 API Key 外的设置都是持久的：并发参数存服务端 `data/settings.json`，
   界面上的语言/模型/输出等选择存浏览器 localStorage
@@ -91,6 +94,22 @@ force-push。工作区不干净时脚本会直接拒绝执行；合并冲突时�
 **API Key 确实没有落盘**。上游重构完全可能变基无冲突却把这些悄悄改坏。
 测试未通过时 `--push` 会拒绝推送。
 
+## 费用计算
+
+`pricing.json` 是价格表，单位为元 / 百万 tokens，取自[官方中文定价页](https://api-docs.deepseek.com/zh-cn/quick_start/pricing)（不是汇率换算）。
+它按生效时间分档，每档可带峰谷时段：
+
+- 2026-08-17 00:00（北京时间）前：统一定价
+- 之后：高峰时段为北京时间 9:00-12:00、14:00-18:00，空闲时段价格减半
+
+费用**不是**任务结束后用总 token 数乘以当前价格算的，而是**每次 API 调用返回时**
+按那一刻生效的价格立即累加。这样跨越峰谷分界、甚至跨越调价时点的长任务也算得对，
+和 DeepSeek 自己的计费方式一致。缓存命中的 token 单独计价（便宜得多），
+取自响应里的 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`。
+
+官方调价时，在 `regimes` 数组**末尾追加**一条即可，不要修改历史条目——
+旧任务的费用是按它当时的价格算出来存下的，改动历史条目会篡改已有账目。
+
 ## 数据存放
 
 默认在 `webapp/data/`（已 gitignore），可用环境变量 `PDF2ZH_WEBAPP_DATA` 覆盖：
@@ -99,6 +118,7 @@ force-push。工作区不干净时脚本会直接拒绝执行；合并冲突时�
 data/
   jobs.sqlite          # 任务记录
   settings.json        # 并发、界面语言等设置（不含 API Key）
+  jobs.sqlite          # 含每个任务的 token 用量与费用
   files/<job_id>/      # <名字>-mono.pdf / <名字>-dual.pdf
 ```
 

@@ -7,6 +7,7 @@ in-memory-only API key handling.
 
 import json
 import os
+import time
 import shutil
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -30,7 +31,12 @@ from openai import OpenAI  # noqa: E402
 from pdf2zh.doclayout import ModelInstance, OnnxModel  # noqa: E402
 from pdf2zh.high_level import translate  # noqa: E402
 
+from webapp.pricing import METER, TABLE  # noqa: E402
 from webapp.store import DATA_DIR, Store, job_dir  # noqa: E402
+from webapp.translator import DEFAULT_EFFORT, EFFORTS, install as install_translator  # noqa: E402
+
+# Route pdf2zh's "deepseek" service to our metered subclass.
+install_translator()
 
 BASE_DIR = Path(__file__).parent
 
@@ -158,6 +164,9 @@ def get_config(sid: Optional[str] = Cookie(None)):
         "languages": LANGUAGES,
         "outputs": OUTPUTS,
         "data_dir": str(DATA_DIR),
+        "efforts": EFFORTS,
+        "default_effort": DEFAULT_EFFORT,
+        "pricing": _pricing_now(),
         "ui_langs": UI_LANGS,
         "ui_lang": UI_LANG,
         "workers": WORKERS,
@@ -203,14 +212,30 @@ def clear_key(response: Response, sid: Optional[str] = Cookie(None)):
     return {"ok": True}
 
 
+def _pricing_now() -> dict:
+    """Rates in force right now, for the UI to show before a job is started."""
+    now = time.time()
+    regime = TABLE.regime_at(now)
+    return {
+        "currency": TABLE.currency,
+        "symbol": getattr(TABLE, "symbol", "¥"),
+        "source": TABLE.source,
+        "checked_at": TABLE.checked_at,
+        "period": TABLE.period(regime, now),
+        "rates": {m: TABLE.rate(m, now) for m in MODELS},
+    }
+
+
 def _run_job(job_id: str, src: Path, api_key: str, model: str, lang_in: str,
-             lang_out: str, pages: Optional[list], output: str) -> None:
+             lang_out: str, pages: Optional[list], output: str,
+             effort: str) -> None:
     def on_progress(t) -> None:
         total = getattr(t, "total", 0) or 0
         STORE.progress(job_id,
                        round(t.n / total, 3) if total else 0.0,
                        getattr(t, "desc", "") or "Translating")
 
+    METER.start(job_id)
     try:
         STORE.update(job_id, status="running", stage="Translating")
         out_dir = src.parent
@@ -224,7 +249,8 @@ def _run_job(job_id: str, src: Path, api_key: str, model: str, lang_in: str,
             thread=LLM_THREADS,
             callback=on_progress,
             model=ModelInstance.value,
-            envs={"DEEPSEEK_API_KEY": api_key, "DEEPSEEK_MODEL": model},
+            envs={"DEEPSEEK_API_KEY": api_key, "DEEPSEEK_MODEL": model,
+                  "DEEPSEEK_EFFORT": effort, "DEEPSEEK_JOB_ID": job_id},
         )
         # pdf2zh always writes both variants; keep only what was asked for.
         kinds = ["mono", "dual"] if output == "both" else [output]
@@ -235,6 +261,13 @@ def _run_job(job_id: str, src: Path, api_key: str, model: str, lang_in: str,
                      kinds=kinds)
     except Exception as exc:  # noqa: BLE001
         STORE.update(job_id, status="error", error=str(exc), stage="Failed")
+    finally:
+        # A failed job still burned tokens; record what it spent either way.
+        usage = METER.pop(job_id)
+        STORE.update(job_id, tokens_in_hit=usage["tokens_in_hit"],
+                     tokens_in_miss=usage["tokens_in_miss"],
+                     tokens_out=usage["tokens_out"], calls=usage["calls"],
+                     cost=round(usage["cost"], 6), priced=int(usage["priced"]))
 
 
 @app.post("/api/translate")
@@ -245,6 +278,7 @@ async def start_translate(
     lang_out: str = Form("zh"),
     pages: str = Form(""),
     output: str = Form("both"),
+    effort: str = Form(DEFAULT_EFFORT),
     sid: Optional[str] = Cookie(None),
 ):
     api_key = _require_key(sid)
@@ -252,6 +286,8 @@ async def start_translate(
         raise HTTPException(status_code=400, detail="err_unknown_model")
     if output not in OUTPUTS:
         raise HTTPException(status_code=400, detail="err_unknown_output")
+    if effort not in EFFORTS:
+        raise HTTPException(status_code=400, detail="err_unknown_effort")
     if not (file.filename or "").lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="err_pdf_only")
 
@@ -262,9 +298,9 @@ async def start_translate(
     src.write_bytes(await file.read())
 
     STORE.create(job_id, name=src.stem, model=model, lang_in=lang_in,
-                 lang_out=lang_out, pages=pages, output=output)
+                 lang_out=lang_out, pages=pages, output=output, effort=effort)
     POOL.submit(_run_job, job_id, src, api_key, model, lang_in, lang_out,
-                _parse_pages(pages), output)
+                _parse_pages(pages), output, effort)
     return {"job_id": job_id}
 
 

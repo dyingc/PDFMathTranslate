@@ -28,17 +28,37 @@ CREATE TABLE IF NOT EXISTS jobs (
     lang_out    TEXT NOT NULL,
     pages       TEXT NOT NULL DEFAULT '',
     output      TEXT NOT NULL,      -- mono | dual | both
+    effort      TEXT NOT NULL DEFAULT 'high',  -- off | low | high | max
     status      TEXT NOT NULL,      -- queued | running | done | error | interrupted
     progress    REAL NOT NULL DEFAULT 0,
     stage       TEXT NOT NULL DEFAULT '',
     error       TEXT NOT NULL DEFAULT '',
     kinds       TEXT NOT NULL DEFAULT '[]',   -- JSON list of available downloads
+    tokens_in_hit  INTEGER NOT NULL DEFAULT 0,
+    tokens_in_miss INTEGER NOT NULL DEFAULT 0,
+    tokens_out     INTEGER NOT NULL DEFAULT 0,
+    calls          INTEGER NOT NULL DEFAULT 0,
+    -- Cost is accumulated per API call at the rate in force at that moment, so
+    -- it stays correct across peak/off-peak boundaries and price changes.
+    cost           REAL NOT NULL DEFAULT 0,
+    priced         INTEGER NOT NULL DEFAULT 1,
     created_at  REAL NOT NULL,
     updated_at  REAL NOT NULL
 );
 """
 
 _LIVE_STATES = ("queued", "running")
+
+# Columns added to `jobs` after the first release, applied on open.
+_ADDED_COLUMNS = {
+    "effort": "TEXT NOT NULL DEFAULT 'high'",
+    "tokens_in_hit": "INTEGER NOT NULL DEFAULT 0",
+    "tokens_in_miss": "INTEGER NOT NULL DEFAULT 0",
+    "tokens_out": "INTEGER NOT NULL DEFAULT 0",
+    "calls": "INTEGER NOT NULL DEFAULT 0",
+    "cost": "REAL NOT NULL DEFAULT 0",
+    "priced": "INTEGER NOT NULL DEFAULT 1",
+}
 
 
 class Store:
@@ -50,8 +70,16 @@ class Store:
         self._db = sqlite3.connect(DB_PATH, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.executescript(_SCHEMA)
+        self._migrate()
         self._db.commit()
         self._last_write: dict = {}
+
+    def _migrate(self) -> None:
+        """Add columns introduced after a database was first created."""
+        have = {r["name"] for r in self._db.execute("PRAGMA table_info(jobs)")}
+        for col, ddl in _ADDED_COLUMNS.items():
+            if col not in have:
+                self._db.execute(f"ALTER TABLE jobs ADD COLUMN {col} {ddl}")
 
     # -- writes ---------------------------------------------------------------
 
