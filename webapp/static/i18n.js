@@ -68,6 +68,7 @@ const I18N = {
     resume: "继续",
     err_not_resumable: "该任务无需继续",
     err_no_source: "源文件已不存在，无法继续",
+    scanned_warn: "这是一份扫描件：页面上的原文是图片，pdf2zh 无法删除它，译文会直接叠在上面。\n\n若继续，我们会在译文所在区域擦除扫描图上的原文像素，图表和线条不受影响；代价是这些区域的底纹或背景也会被一并擦掉。\n\n继续翻译？",
   },
   "zh-TW": {
     title: "PDF 翻譯（保留公式排版）",
@@ -135,6 +136,7 @@ const I18N = {
     resume: "繼續",
     err_not_resumable: "該任務無需繼續",
     err_no_source: "原始檔已不存在，無法繼續",
+    scanned_warn: "這是一份掃描件：頁面上的原文是圖片，pdf2zh 無法刪除它，譯文會直接疊在上面。\n\n若繼續，我們會在譯文所在區域擦除掃描圖上的原文像素，圖表與線條不受影響；代價是這些區域的底紋或背景也會一併被擦掉。\n\n繼續翻譯？",
   },
   "en": {
     title: "PDF Translation (formulas preserved)",
@@ -202,6 +204,7 @@ const I18N = {
     resume: "Resume",
     err_not_resumable: "This job does not need resuming",
     err_no_source: "The source file is gone; cannot resume",
+    scanned_warn: "This is a scanned document: the original text on the page is an image, which pdf2zh cannot remove, so the translation would land on top of it.\n\nIf you continue, the pixels of the original text will be erased in the areas the translation occupies. Figures and line art are left alone; the cost is that any shading or background in those areas is erased too.\n\nContinue?",
   },
   "ja": {
     title: "PDF 翻訳（数式レイアウトを保持）",
@@ -269,6 +272,7 @@ const I18N = {
     resume: "再開",
     err_not_resumable: "このジョブは再開の必要がありません",
     err_no_source: "元ファイルが見つからないため再開できません",
+    scanned_warn: "これはスキャン文書です。ページ上の原文は画像であり、pdf2zh では削除できないため、訳文がその上に重なってしまいます。\n\n続行すると、訳文が置かれる領域だけスキャン画像上の原文のピクセルを消去します。図や線画はそのままですが、その領域の地色や背景も一緒に消えます。\n\n続行しますか？",
   },
   "ko": {
     title: "PDF 번역 (수식 레이아웃 유지)",
@@ -336,6 +340,7 @@ const I18N = {
     resume: "이어서 진행",
     err_not_resumable: "이 작업은 이어서 진행할 필요가 없습니다",
     err_no_source: "원본 파일이 없어 이어서 진행할 수 없습니다",
+    scanned_warn: "이 문서는 스캔본입니다. 페이지의 원문이 이미지라서 pdf2zh 가 제거할 수 없고, 번역문이 그 위에 겹쳐집니다.\n\n계속하면 번역문이 놓이는 영역에서 스캔 이미지의 원문 픽셀을 지웁니다. 그림과 선은 그대로 두지만, 해당 영역의 음영이나 배경도 함께 지워집니다.\n\n계속할까요?",
   },
   "fr": {
     title: "Traduction de PDF (mise en page des formules préservée)",
@@ -403,6 +408,7 @@ const I18N = {
     resume: "Reprendre",
     err_not_resumable: "Cette tâche n'a pas besoin d'être reprise",
     err_no_source: "Le fichier source a disparu ; reprise impossible",
+    scanned_warn: "Ce document est numérisé : le texte original de la page est une image que pdf2zh ne peut pas supprimer, la traduction se superposerait donc à lui.\n\nSi vous continuez, les pixels du texte original seront effacés là où la traduction se place. Les figures et les traits sont préservés ; en contrepartie, tout fond ou trame dans ces zones disparaîtra aussi.\n\nContinuer ?",
   },
   "de": {
     title: "PDF-Übersetzung (Formellayout bleibt erhalten)",
@@ -470,6 +476,7 @@ const I18N = {
     resume: "Fortsetzen",
     err_not_resumable: "Dieser Auftrag muss nicht fortgesetzt werden",
     err_no_source: "Die Quelldatei fehlt; Fortsetzen nicht möglich",
+    scanned_warn: "Dies ist ein Scan: Der Originaltext auf der Seite ist ein Bild, das pdf2zh nicht entfernen kann — die Übersetzung läge darüber.\n\nWenn Sie fortfahren, werden die Pixel des Originaltexts dort gelöscht, wo die Übersetzung steht. Abbildungen und Linien bleiben erhalten; dafür verschwinden auch Schattierungen oder Hintergründe in diesen Bereichen.\n\nFortfahren?",
   },
   "ru": {
     title: "Перевод PDF (вёрстка формул сохраняется)",
@@ -537,6 +544,7 @@ const I18N = {
     resume: "Продолжить",
     err_not_resumable: "Эту задачу не нужно продолжать",
     err_no_source: "Исходный файл отсутствует, продолжить нельзя",
+    scanned_warn: "Это скан: исходный текст на странице — изображение, которое pdf2zh не может удалить, поэтому перевод лёг бы поверх него.\n\nЕсли продолжить, пиксели исходного текста будут стёрты там, где размещается перевод. Рисунки и линии не пострадают; платой станет то, что фон или заливка в этих областях тоже исчезнут.\n\nПродолжить?",
   },
   "es": {
     title: "Traducción de PDF (se conserva la maquetación de las fórmulas)",
@@ -604,6 +612,7 @@ const I18N = {
     resume: "Reanudar",
     err_not_resumable: "Esta tarea no necesita reanudarse",
     err_no_source: "El archivo original ya no existe; no se puede reanudar",
+    scanned_warn: "Este documento es un escaneo: el texto original de la página es una imagen que pdf2zh no puede eliminar, así que la traducción quedaría encima.\n\nSi continúas, se borrarán los píxeles del texto original en las zonas que ocupa la traducción. Las figuras y los trazos se conservan; a cambio, también se borrará cualquier sombreado o fondo de esas zonas.\n\n¿Continuar?",
   },
   "it": {
     title: "Traduzione di PDF (impaginazione delle formule preservata)",
@@ -671,5 +680,6 @@ const I18N = {
     resume: "Riprendi",
     err_not_resumable: "Questa attività non ha bisogno di essere ripresa",
     err_no_source: "Il file di origine non esiste più; impossibile riprendere",
+    scanned_warn: "Questo è un documento scansionato: il testo originale della pagina è un'immagine che pdf2zh non può rimuovere, quindi la traduzione finirebbe sopra di esso.\n\nSe prosegui, i pixel del testo originale verranno cancellati nelle aree occupate dalla traduzione. Figure e tratti restano intatti; in cambio si cancellano anche eventuali sfondi o retini in quelle aree.\n\nProseguire?",
   },
 };

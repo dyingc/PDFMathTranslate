@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     pages       TEXT NOT NULL DEFAULT '',
     output      TEXT NOT NULL,      -- mono | dual | both
     effort      TEXT NOT NULL DEFAULT 'high',  -- off | low | high | max
+    whiteout    INTEGER NOT NULL DEFAULT 0,    -- erase scanned original text
     status      TEXT NOT NULL,      -- queued | running | done | error | interrupted
     progress    REAL NOT NULL DEFAULT 0,
     stage       TEXT NOT NULL DEFAULT '',
@@ -54,6 +55,7 @@ _LIVE_STATES = ("queued", "running")
 _ADDED_COLUMNS = {
     "src_name": "TEXT NOT NULL DEFAULT ''",
     "effort": "TEXT NOT NULL DEFAULT 'high'",
+    "whiteout": "INTEGER NOT NULL DEFAULT 0",
     "tokens_in_hit": "INTEGER NOT NULL DEFAULT 0",
     "tokens_in_miss": "INTEGER NOT NULL DEFAULT 0",
     "tokens_out": "INTEGER NOT NULL DEFAULT 0",

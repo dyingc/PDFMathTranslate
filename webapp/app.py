@@ -34,6 +34,7 @@ from pdf2zh.doclayout import ModelInstance, OnnxModel  # noqa: E402
 from pdf2zh.high_level import translate  # noqa: E402
 
 from webapp.pricing import METER, TABLE  # noqa: E402
+from webapp.scanned import dual_page_for, is_scanned, whiteout  # noqa: E402
 from webapp.store import DATA_DIR, Store, job_dir  # noqa: E402
 from webapp.translator import DEFAULT_EFFORT, EFFORTS, install as install_translator  # noqa: E402
 
@@ -285,7 +286,7 @@ def _pricing_now() -> dict:
 
 def _run_job(job_id: str, src: Path, api_key: str, model: str, lang_in: str,
              lang_out: str, pages: Optional[list], output: str,
-             effort: str) -> None:
+             effort: str, do_whiteout: bool = False) -> None:
     def on_progress(t) -> None:
         total = getattr(t, "total", 0) or 0
         STORE.progress(job_id,
@@ -316,6 +317,13 @@ def _run_job(job_id: str, src: Path, api_key: str, model: str, lang_in: str,
         kinds = ["mono", "dual"] if output == "both" else [output]
         for unwanted in {"mono", "dual"} - set(kinds):
             (out_dir / f"{src.stem}-{unwanted}.pdf").unlink(missing_ok=True)
+        if do_whiteout:
+            # Must happen before the upload is removed: the source tells us
+            # where the original text was.
+            STORE.update(job_id, stage="Cleaning up scan")
+            for kind in kinds:
+                whiteout(src, out_dir / f"{src.stem}-{kind}.pdf",
+                         dual_page_for if kind == "dual" else None)
         src.unlink(missing_ok=True)  # the upload is reproducible; the output is not
         STORE.update(job_id, status="done", progress=1.0, stage="Completed",
                      kinds=kinds)
@@ -341,6 +349,7 @@ async def start_translate(
     pages: str = Form(""),
     output: str = Form("both"),
     effort: str = Form(DEFAULT_EFFORT),
+    confirm_scanned: str = Form(""),
     sid: Optional[str] = Cookie(None),
 ):
     api_key = _require_key(sid)
@@ -359,9 +368,16 @@ async def start_translate(
     src = d / os.path.basename(file.filename)
     src.write_bytes(await file.read())
 
+    # A scan needs the user's decision before anything is spent on it.
+    scan = is_scanned(src)
+    if scan["scanned"] and not confirm_scanned:
+        shutil.rmtree(d, ignore_errors=True)
+        raise HTTPException(status_code=409,
+                            detail={"code": "err_scanned", "raw": ""})
+
     STORE.create(job_id, name=src.stem, src_name=src.name, model=model,
                  lang_in=lang_in, lang_out=lang_out, pages=pages, output=output,
-                 effort=effort)
+                 effort=effort, whiteout=int(bool(scan["scanned"])))
     _submit(STORE.get(job_id), src, api_key)
     return {"job_id": job_id}
 
@@ -382,7 +398,7 @@ def _source_of(job: dict) -> Optional[Path]:
 def _submit(job: dict, src: Path, api_key: str) -> None:
     POOL.submit(_run_job, job["id"], src, api_key, job["model"], job["lang_in"],
                 job["lang_out"], _parse_pages(job["pages"]), job["output"],
-                job["effort"])
+                job["effort"], bool(job["whiteout"]))
 
 
 RESUMABLE = ("interrupted", "error")

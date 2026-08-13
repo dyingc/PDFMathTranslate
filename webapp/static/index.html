@@ -185,6 +185,12 @@ function showMsg(el, key, raw, isErr) {
   $(el).textContent = key ? t(key) + (raw ? `: ${raw}` : '') : '';
   $(el).className = 'msg' + (isErr ? ' err' : '');
 }
+// Reads the error code without consuming the body for the caller.
+async function peek(resp) {
+  const d = (await resp.clone().json().catch(() => ({}))).detail;
+  return typeof d === 'object' && d ? d.code : d;
+}
+
 async function errOf(resp) {
   const d = (await resp.json().catch(() => ({}))).detail;
   return typeof d === 'object' && d ? d : { code: d || 'err_unknown_job', raw: '' };
@@ -315,7 +321,13 @@ $('go').onclick = async () => {
 
   $('go').disabled = true;
   showMsg('msg', 'uploading', '', false);
-  const r = await fetch('/api/translate', { method: 'POST', body: fd });
+  let r = await fetch('/api/translate', { method: 'POST', body: fd });
+  // A scanned PDF needs an explicit decision before we spend anything on it.
+  if (r.status === 409 && (await peek(r)) === 'err_scanned') {
+    if (!confirm(t('scanned_warn'))) { $('go').disabled = false; showMsg('msg', null); return; }
+    fd.append('confirm_scanned', '1');
+    r = await fetch('/api/translate', { method: 'POST', body: fd });
+  }
   $('go').disabled = false;
   if (!r.ok) {
     const e = await errOf(r);
