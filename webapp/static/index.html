@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PDF · DeepSeek</title>
 <style>
+  /* Without this, width:100% on an <input> excludes its padding and border,
+     so the field spills out of its flex column and over the next one. */
+  *, *::before, *::after { box-sizing: border-box; }
   :root { color-scheme: light dark; --fg:#1a1a1a; --muted:#6b7280; --line:#e3e3e6; --accent:#2563eb; }
   @media (prefers-color-scheme: dark) { :root { --fg:#e8e8ea; --muted:#9aa0a6; --line:#33343a; } }
   body { font: 15px/1.6 -apple-system, "Segoe UI", "PingFang SC", sans-serif; color: var(--fg);
