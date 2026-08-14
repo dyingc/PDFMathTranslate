@@ -139,6 +139,21 @@ def _pricing_table():
                 assert set(period) == {"cache_hit", "cache_miss", "output"}, period
 
 
+@check("VFONT 仍覆盖 pdf2zh 内置的公式字体规则")
+def _vfont_superset():
+    import re
+    from pdf2zh import converter
+    from webapp.app import VFONT
+
+    src = inspect.getsource(converter.TranslateConverter.receive_layout)
+    builtin = re.search(r'r"\((CM\[\^R\][^"]+)\)"', src)
+    assert builtin, "找不到 pdf2zh 内置的公式字体正则，规则可能已改变"
+    # Passing vfont switches the built-in rules off, so ours has to contain them
+    # or formulas would quietly start being translated as prose.
+    missing = [alt for alt in builtin.group(1).split("|") if alt not in VFONT]
+    assert not missing, f"VFONT 缺少内置规则: {missing}"
+
+
 @check("重影修复所依赖的 PyMuPDF 能力仍在")
 def _deghost_capabilities():
     import pymupdf

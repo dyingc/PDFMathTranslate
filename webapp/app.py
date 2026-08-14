@@ -70,6 +70,16 @@ LANGUAGES = {
 # Values are i18n keys, not display text — the UI language is chosen client-side.
 OUTPUTS = {"both": "out_both", "mono": "out_mono", "dual": "out_dual"}
 
+# Fonts whose text pdf2zh should carry over verbatim instead of translating and
+# re-flowing. Without the typewriter families a code block is treated as prose:
+# its lines are merged into one paragraph and re-wrapped, destroying the layout.
+# Passing vfont *replaces* pdf2zh's built-in list, so the first half of this
+# pattern reproduces that list — the smoke test checks it stays a superset.
+VFONT = (r"(CM[^R]|MS.M|XY|MT|BL|RM|EU|LA|RS|LINE|LCIRCLE|TeX-|rsfs|txsy|wasy"
+         r"|stmary|.*Mono|.*Code|.*Ital|.*Sym|.*Math"
+         r"|cmtt|txtt|.*Typewriter|.*Courier|Courier|.*Consol|Inconsolata"
+         r"|Menlo|SFMono)")
+
 # Interface languages == the languages we can translate into.
 UI_LANGS = list(LANGUAGES)
 DEFAULT_UI_LANG = "zh"
@@ -312,6 +322,7 @@ def _run_job(job_id: str, src: Path, api_key: str, model: str, lang_in: str,
                 lang_out=lang_out,
                 service=f"deepseek:{model}",
                 thread=LLM_THREADS,      # read now, so changes apply to new jobs
+                vfont=VFONT,
                 callback=on_progress,
                 model=ModelInstance.value,
                 envs={"DEEPSEEK_API_KEY": api_key, "DEEPSEEK_MODEL": model,
