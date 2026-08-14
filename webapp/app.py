@@ -38,6 +38,7 @@ from webapp.pricing import METER, TABLE  # noqa: E402
 from webapp.deghost import deghost  # noqa: E402
 from webapp.links import restore_links  # noqa: E402
 from webapp.scanned import dual_page_for, is_scanned, whiteout  # noqa: E402
+from webapp.toc import without_toc  # noqa: E402
 from webapp.store import DATA_DIR, Store, job_dir  # noqa: E402
 from webapp.translator import DEFAULT_EFFORT, EFFORTS, install as install_translator  # noqa: E402
 
@@ -321,6 +322,10 @@ def _run_job(job_id: str, src: Path, api_key: str, model: str, lang_in: str,
         with GATE.slot():
             STORE.update(job_id, status="running", stage="Translating")
             out_dir = src.parent
+            pages, skipped = without_toc(src, pages)
+            if skipped:
+                logger.info("job %s: leaving contents pages %s untranslated",
+                            job_id, sorted(p + 1 for p in skipped))
             translate(
                 files=[str(src)],
                 output=str(out_dir),
