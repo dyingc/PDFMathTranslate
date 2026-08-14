@@ -39,6 +39,16 @@ from webapp.deghost import deghost  # noqa: E402
 from webapp.links import restore_links  # noqa: E402
 from webapp.scanned import dual_page_for, is_scanned, whiteout  # noqa: E402
 from webapp.toc import without_toc  # noqa: E402
+from webapp.verbatim import install as install_verbatim, marking, verbatim_blocks  # noqa: E402
+
+
+def page_count(path: Path) -> int:
+    import pymupdf
+    doc = pymupdf.open(path)
+    try:
+        return doc.page_count
+    finally:
+        doc.close()
 from webapp.store import DATA_DIR, Store, job_dir  # noqa: E402
 from webapp.translator import DEFAULT_EFFORT, EFFORTS, install as install_translator  # noqa: E402
 
@@ -202,6 +212,7 @@ def _startup() -> None:
     # The layout model is what lets pdf2zh keep formulas/figures in place.
     if ModelInstance.value is None:
         ModelInstance.value = OnnxModel.load_available()
+    install_verbatim(ModelInstance.value)
     n = STORE.reap_stale()
     print(f"[webapp] data dir: {DATA_DIR} | "
           f"workers={WORKERS} llm_threads={LLM_THREADS}"
@@ -326,20 +337,23 @@ def _run_job(job_id: str, src: Path, api_key: str, model: str, lang_in: str,
             if skipped:
                 logger.info("job %s: leaving contents pages %s untranslated",
                             job_id, sorted(p + 1 for p in skipped))
-            translate(
-                files=[str(src)],
-                output=str(out_dir),
-                pages=pages,
-                lang_in=lang_in,
-                lang_out=lang_out,
-                service=f"deepseek:{model}",
-                thread=LLM_THREADS,      # read now, so changes apply to new jobs
-                vfont=VFONT,
-                callback=on_progress,
-                model=ModelInstance.value,
-                envs={"DEEPSEEK_API_KEY": api_key, "DEEPSEEK_MODEL": model,
-                      "DEEPSEEK_EFFORT": effort, "DEEPSEEK_JOB_ID": job_id},
-            )
+            blocks = verbatim_blocks(src)
+            order = pages if pages is not None else list(range(page_count(src)))
+            with marking(order, blocks):
+                translate(
+                    files=[str(src)],
+                    output=str(out_dir),
+                    pages=pages,
+                    lang_in=lang_in,
+                    lang_out=lang_out,
+                    service=f"deepseek:{model}",
+                    thread=LLM_THREADS,      # read now, so changes apply to new jobs
+                    vfont=VFONT,
+                    callback=on_progress,
+                    model=ModelInstance.value,
+                    envs={"DEEPSEEK_API_KEY": api_key, "DEEPSEEK_MODEL": model,
+                          "DEEPSEEK_EFFORT": effort, "DEEPSEEK_JOB_ID": job_id},
+                )
         # pdf2zh always writes both variants; keep only what was asked for.
         kinds = ["mono", "dual"] if output == "both" else [output]
         for unwanted in {"mono", "dual"} - set(kinds):

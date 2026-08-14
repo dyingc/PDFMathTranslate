@@ -174,6 +174,22 @@ def _deghost_capabilities():
     doc.close()
 
 
+@check("版面区域注入所依赖的 pdf2zh 约定仍成立")
+def _verbatim_injection():
+    from pdf2zh import high_level
+    from pdf2zh.doclayout import YoloBox
+
+    src = inspect.getsource(high_level.translate_patch)
+    # One predict call per page, in page order — this is what lets us match a
+    # page to its precomputed blocks by position.
+    assert src.count("model.predict(") == 1, "translate_patch 调用 predict 的次数变了"
+    assert "isolate_formula" in src, "vcls 里不再有 isolate_formula"
+    assert "box[y0:y1, x0:x1] = 0" in src, "保留区域不再被painted 为 0"
+    # YoloBox must still accept a flat [x0, y0, x1, y1, conf, cls] row.
+    box = YoloBox(data=[1, 2, 3, 4, 0.9, 7])
+    assert list(box.xyxy) == [1, 2, 3, 4] and box.cls == 7, "YoloBox 结构已改变"
+
+
 @check("链接重建所依赖的 PyMuPDF 能力仍在")
 def _link_capabilities():
     import pymupdf
