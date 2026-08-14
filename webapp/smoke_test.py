@@ -200,6 +200,87 @@ def _link_capabilities():
         assert hasattr(pymupdf.Page, method), f"Page 缺少 {method}"
 
 
+@check("上下文预翻译写入的缓存能被正式那一遍命中")
+def _context_cache_key():
+    """This is the whole mechanism: prepare() writes translations into pdf2zh's
+    cache and the real pass reads them back. The two instances are built in
+    different places, so if their cache parameters ever diverge the app would
+    quietly translate everything twice, at full price."""
+    import webapp.app  # noqa: F401 - installs the subclass
+    from pdf2zh import converter
+    from webapp.translator import MeteredDeepseekTranslator
+
+    envs = {"DEEPSEEK_API_KEY": "sk-smoke", "DEEPSEEK_MODEL": "deepseek-v4-flash",
+            "DEEPSEEK_EFFORT": "high", "DEEPSEEK_JOB_ID": "smoke",
+            "DEEPSEEK_COLLECT": ""}
+    ours = MeteredDeepseekTranslator("en", "zh", "deepseek-v4-flash", envs=envs)
+    # Exactly how TranslateConverter builds it.
+    theirs = converter.DeepseekTranslator("en", "zh", "deepseek-v4-flash",
+                                          envs=envs, prompt=None,
+                                          ignore_cache=False)
+    assert ours.cache.translate_engine == theirs.cache.translate_engine
+    assert ours.cache.translate_engine_params == theirs.cache.translate_engine_params, (
+        f"缓存键不一致:\n  ours   {ours.cache.translate_engine_params}\n"
+        f"  theirs {theirs.cache.translate_engine_params}")
+
+
+@check("采集模式与琐碎段落判定行为正确")
+def _context_rules():
+    from webapp import context
+
+    for text in ("n", "12", "1.", "  ", "{v3}", "{v1} {v2}", "—"):
+        assert context.is_trivial(text), f"{text!r} 不应被送去翻译"
+    for text in ("Abstract", "The cat sat.", "{v0} is a set"):
+        assert not context.is_trivial(text), f"{text!r} 应被翻译"
+
+    # Chunking must never split a paragraph, or the cache key would not match
+    # the text pdf2zh later looks up.
+    items = [(i, "x" * 700) for i in range(5)]
+    groups = context.chunks(items, limit=2000)
+    assert [i for g in groups for i, _ in g] == list(range(5)), groups
+    assert all(sum(len(t) for _, t in g) <= 2000 or len(g) == 1 for g in groups)
+
+    # A paragraph longer than the limit still travels whole.
+    big = context.chunks([(0, "y" * 5000)], limit=2000)
+    assert big == [[(0, "y" * 5000)]]
+
+
+@check("短段落的缓存键会被上下文加宽")
+def _context_keys():
+    from webapp import context
+
+    long_a = "a" * 300
+    paras = ["2.1 Overview", "b" * 150, long_a, "Conclusion"]
+    keys = context.build_keys(paras)
+    # Long enough to stand alone: keyed by itself, so it is reusable elsewhere.
+    assert keys[long_a] == long_a
+    # Too short: keyed together with what follows, until it is distinctive.
+    assert keys["2.1 Overview"].startswith("2.1 Overview\n")
+    assert len(keys["2.1 Overview"]) >= context.MIN_KEY_CHARS
+    # A tail too short to widen still gets whatever context exists.
+    assert keys["Conclusion"] == "Conclusion"
+
+    context.use_keys("smoke-keys", paras)
+    try:
+        assert context.cache_key("smoke-keys", long_a) == long_a
+        assert context.cache_key("smoke-keys", "2.1 Overview") == keys["2.1 Overview"]
+        # No map means no honest key for a short paragraph — it must not be
+        # cached, or it would leak into unrelated documents.
+        assert context.cache_key("no-such-job", "2.1 Overview") is None
+        assert context.cache_key("no-such-job", long_a) == long_a
+    finally:
+        context.forget_keys("smoke-keys")
+    assert context.cache_key("smoke-keys", "2.1 Overview") is None
+
+
+@check("公式占位符能安全穿过 JSON 编解码")
+def _context_placeholders():
+    import json
+    text = 'A {v0} and <b3>x</b3> "quoted" \\ backslash {v12}'
+    assert json.loads(json.dumps({"segments": [{"id": 0, "text": text}]},
+                                 ensure_ascii=False))["segments"][0]["text"] == text
+
+
 @check("版面模型入口仍在")
 def _layout_model():
     from pdf2zh.doclayout import ModelInstance, OnnxModel

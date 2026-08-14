@@ -117,7 +117,10 @@ class Store:
         if prev and progress - prev[0] < 0.01 and stage == prev[1]:
             return
         self._last_write[job_id] = (progress, stage)
-        self.update(job_id, progress=progress, stage=stage, status="running")
+        # `None` means "leave the stage alone": the caller set a stage of its
+        # own and only the bar is moving.
+        fields = {"stage": stage} if stage is not None else {}
+        self.update(job_id, progress=progress, status="running", **fields)
 
     def reap_stale(self) -> int:
         """A restart kills any in-flight translation; nothing can resume it."""

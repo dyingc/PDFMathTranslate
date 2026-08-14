@@ -34,6 +34,7 @@ from openai import OpenAI  # noqa: E402
 from pdf2zh.doclayout import ModelInstance, OnnxModel  # noqa: E402
 from pdf2zh.high_level import translate  # noqa: E402
 
+from webapp import context  # noqa: E402
 from webapp.pricing import METER, TABLE  # noqa: E402
 from webapp.deghost import deghost  # noqa: E402
 from webapp.links import restore_links  # noqa: E402
@@ -136,6 +137,11 @@ except (OSError, ValueError):
 # product of the two — raise with the provider's rate limit in mind.
 WORKERS = _settings_int("workers", "WEBAPP_WORKERS", 2)
 LLM_THREADS = _settings_int("llm_threads", "WEBAPP_LLM_THREADS", 4)
+
+# Translate paragraphs in chunks with the document described up front, instead
+# of one isolated paragraph per request. Costs one extra (API-free) layout pass;
+# set WEBAPP_CONTEXT=0 to fall back to pdf2zh's own behaviour.
+CONTEXT = os.environ.get("WEBAPP_CONTEXT", "1").strip() not in ("0", "false", "no")
 
 # The interface language is a saved preference like any other; it is what the
 # very first screen (API key entry) renders in, so it must be known before the
@@ -317,14 +323,68 @@ def _pricing_now() -> dict:
     }
 
 
+def _envs(api_key: str, model: str, effort: str, job_id: str,
+          collect: str = "") -> dict:
+    return {"DEEPSEEK_API_KEY": api_key, "DEEPSEEK_MODEL": model,
+            "DEEPSEEK_EFFORT": effort, "DEEPSEEK_JOB_ID": job_id,
+            "DEEPSEEK_COLLECT": collect}
+
+
+def _with_context(job_id: str, src: Path, api_key: str, model: str,
+                  lang_in: str, lang_out: str, pages, effort: str,
+                  blocks: dict, order: list, report) -> None:
+    """Pre-translate the document's paragraphs with their neighbours in view.
+
+    Best-effort throughout: anything this leaves uncached is translated the
+    ordinary way, one isolated paragraph at a time.
+    """
+    from webapp.translator import MeteredDeepseekTranslator
+
+    STORE.update(job_id, stage="Reading document")
+    sink = context.collect_into(job_id)
+    try:
+        with marking(order, blocks):
+            translate(files=[str(src)], output=str(src.parent), pages=pages,
+                      lang_in=lang_in, lang_out=lang_out,
+                      service=f"deepseek:{model}",
+                      thread=1,          # keeps the paragraphs in reading order
+                      vfont=VFONT, callback=lambda t: report(0, t),
+                      model=ModelInstance.value,
+                      envs=_envs(api_key, model, effort, job_id, collect=job_id))
+        paragraphs = list(sink)
+    finally:
+        context.drop(job_id)
+    if not paragraphs:
+        return
+
+    # Both this pass and the real one must agree on how a paragraph is keyed,
+    # so the key map is registered for the whole job, not just for prepare().
+    context.use_keys(job_id, paragraphs)
+    STORE.update(job_id, stage="Translating in context")
+    tr = MeteredDeepseekTranslator(lang_in, lang_out, model,
+                                   envs=_envs(api_key, model, effort, job_id))
+    done, total = context.prepare(tr, paragraphs, context.title_of(src),
+                                  progress=lambda f: report(1, f))
+    logger.info("job %s: %d/%d paragraphs translated with context",
+                job_id, done, total)
+
+
 def _run_job(job_id: str, src: Path, api_key: str, model: str, lang_in: str,
              lang_out: str, pages: Optional[list], output: str,
              effort: str, do_whiteout: bool = False) -> None:
+    # Three passes share one progress bar: reading the document, translating it
+    # in context, then laying it out.
+    spans = [(0.0, 0.15), (0.15, 0.60), (0.60, 1.0)]
+
+    def report(phase: int, value) -> None:
+        if not isinstance(value, float):     # a tqdm object from pdf2zh
+            total = getattr(value, "total", 0) or 0
+            value = value.n / total if total else 0.0
+        lo, hi = spans[phase]
+        STORE.progress(job_id, round(lo + (hi - lo) * value, 3), None)
+
     def on_progress(t) -> None:
-        total = getattr(t, "total", 0) or 0
-        STORE.progress(job_id,
-                       round(t.n / total, 3) if total else 0.0,
-                       getattr(t, "desc", "") or "Translating")
+        report(2, t)
 
     METER.start(job_id)
     try:
@@ -339,6 +399,13 @@ def _run_job(job_id: str, src: Path, api_key: str, model: str, lang_in: str,
                             job_id, sorted(p + 1 for p in skipped))
             blocks = verbatim_blocks(src)
             order = pages if pages is not None else list(range(page_count(src)))
+            if CONTEXT:
+                try:
+                    _with_context(job_id, src, api_key, model, lang_in,
+                                  lang_out, pages, effort, blocks, order, report)
+                except Exception as exc:      # noqa: BLE001 - quality, not correctness
+                    logger.warning("context pass failed for %s: %s", job_id, exc)
+            STORE.update(job_id, status="running", stage="Translating")
             with marking(order, blocks):
                 translate(
                     files=[str(src)],
@@ -351,8 +418,7 @@ def _run_job(job_id: str, src: Path, api_key: str, model: str, lang_in: str,
                     vfont=VFONT,
                     callback=on_progress,
                     model=ModelInstance.value,
-                    envs={"DEEPSEEK_API_KEY": api_key, "DEEPSEEK_MODEL": model,
-                          "DEEPSEEK_EFFORT": effort, "DEEPSEEK_JOB_ID": job_id},
+                    envs=_envs(api_key, model, effort, job_id),
                 )
         # pdf2zh always writes both variants; keep only what was asked for.
         kinds = ["mono", "dual"] if output == "both" else [output]
@@ -383,6 +449,7 @@ def _run_job(job_id: str, src: Path, api_key: str, model: str, lang_in: str,
         STORE.update(job_id, status="error", error=str(exc), stage="Failed")
     finally:
         # A failed job still burned tokens; record what it spent either way.
+        context.forget_keys(job_id)
         usage = METER.pop(job_id)
         STORE.add_usage(job_id, tokens_in_hit=usage["tokens_in_hit"],
                         tokens_in_miss=usage["tokens_in_miss"],
