@@ -174,6 +174,16 @@ def _deghost_capabilities():
     doc.close()
 
 
+@check("链接重建所依赖的 PyMuPDF 能力仍在")
+def _link_capabilities():
+    import pymupdf
+    for const in ("LINK_GOTO", "LINK_NAMED", "LINK_URI"):
+        assert hasattr(pymupdf, const), f"PyMuPDF 缺少 {const}"
+    for method in ("get_links", "insert_link", "delete_link", "search_for",
+                   "get_textbox"):
+        assert hasattr(pymupdf.Page, method), f"Page 缺少 {method}"
+
+
 @check("版面模型入口仍在")
 def _layout_model():
     from pdf2zh.doclayout import ModelInstance, OnnxModel
