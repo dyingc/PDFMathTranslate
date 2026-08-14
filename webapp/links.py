@@ -46,6 +46,20 @@ def _reanchor(src_page, out_page, rect: pymupdf.Rect) -> Optional[pymupdf.Rect]:
     return None
 
 
+# hyperref draws its coloured boxes with these entries; a link created from
+# scratch gets /BS <</W 0>>, i.e. no visible border at all.
+_APPEARANCE = ("Border", "C", "H")
+
+
+def _copy_appearance(src_doc, src_xref: int, out_doc, out_xref: int) -> None:
+    for key in _APPEARANCE:
+        kind, value = src_doc.xref_get_key(src_xref, key)
+        if kind != "null":
+            out_doc.xref_set_key(out_xref, key, value)
+    # /BS would override /Border and hide the box again.
+    out_doc.xref_set_key(out_xref, "BS", "null")
+
+
 def _key(link: dict) -> tuple:
     r = pymupdf.Rect(link["from"])
     return (link.get("kind"), round(r.x0, 1), round(r.y0, 1),
@@ -93,9 +107,18 @@ def restore_links(source: Path, target: Path,
                     continue              # launch/remote actions are not ours
                 try:
                     page.insert_link(new)
-                    added += 1
                 except Exception:         # noqa: BLE001 - one bad link is not fatal
                     continue
+                added += 1
+                # Carry over the border and colour, or the link works but is
+                # invisible — the reader has no way to know it is there.
+                # get_links() cannot see the new annotation until the page is
+                # reloaded, but annot_xrefs() can.
+                if link.get("xref"):
+                    xrefs = [x for x, kind, _ in page.annot_xrefs()
+                             if kind == pymupdf.PDF_ANNOT_LINK]
+                    if xrefs:
+                        _copy_appearance(src, link["xref"], out, xrefs[-1])
         if added:
             tmp = target.with_suffix(".links.pdf")
             out.save(tmp, deflate=True, garbage=3)
