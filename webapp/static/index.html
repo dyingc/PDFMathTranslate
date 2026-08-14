@@ -17,8 +17,12 @@
   p.sub { color: var(--muted); margin-top: 0; }
   section { border: 1px solid var(--line); border-radius: 10px; padding: 18px; margin-top: 20px; }
   label { display:block; font-size:13px; color:var(--muted); margin-bottom:4px; }
-  input, select, button { font: inherit; padding: 8px 10px; border-radius: 7px;
-         border: 1px solid var(--line); background: transparent; color: inherit; width: 100%; }
+  /* Every control type has its own intrinsic height (text input, number input,
+     select and button all differ), so pin one height rather than chase them. */
+  input, select, button { font: inherit; line-height: 1.35; height: 40px;
+         padding: 0 10px; border-radius: 7px; border: 1px solid var(--line);
+         background: transparent; color: inherit; width: 100%; }
+  input[type=file] { padding: 7px 10px; }
   button { background: var(--accent); color: #fff; border: none; cursor: pointer; }
   button:disabled { opacity: .5; cursor: default; }
   .row { display: flex; gap: 12px; } .row > div { flex: 1; }
