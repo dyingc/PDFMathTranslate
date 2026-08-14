@@ -79,7 +79,13 @@ OUTPUTS = {"both": "out_both", "mono": "out_mono", "dual": "out_dual"}
 VFONT = (r"(CM[^R]|MS.M|XY|MT|BL|RM|EU|LA|RS|LINE|LCIRCLE|TeX-|rsfs|txsy|wasy"
          r"|stmary|.*Mono|.*Code|.*Ital|.*Sym|.*Math"
          r"|cmtt|txtt|.*Typewriter|.*Courier|Courier|.*Consol|Inconsolata"
-         r"|Menlo|SFMono)")
+         r"|Menlo|SFMono"
+         # Computer Modern Roman at 5-7pt is a sub/superscript, never prose.
+         # Left as text it turns a verbatim block into a mixed paragraph, and
+         # pdf2zh then re-flows the block by the *paragraph's* font size — the
+         # tiny script size — collapsing the line spacing until lines collide.
+         # CMR8 and up can be real footnote text, so they stay translatable.
+         r"|CMR[567])")
 
 # Interface languages == the languages we can translate into.
 UI_LANGS = list(LANGUAGES)
