@@ -6,6 +6,7 @@ in-memory-only API key handling.
 """
 
 import json
+import logging
 import os
 import threading
 import time
@@ -34,12 +35,15 @@ from pdf2zh.doclayout import ModelInstance, OnnxModel  # noqa: E402
 from pdf2zh.high_level import translate  # noqa: E402
 
 from webapp.pricing import METER, TABLE  # noqa: E402
+from webapp.deghost import deghost  # noqa: E402
 from webapp.scanned import dual_page_for, is_scanned, whiteout  # noqa: E402
 from webapp.store import DATA_DIR, Store, job_dir  # noqa: E402
 from webapp.translator import DEFAULT_EFFORT, EFFORTS, install as install_translator  # noqa: E402
 
 # Route pdf2zh's "deepseek" service to our metered subclass.
 install_translator()
+
+logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).parent
 
@@ -317,13 +321,19 @@ def _run_job(job_id: str, src: Path, api_key: str, model: str, lang_in: str,
         kinds = ["mono", "dual"] if output == "both" else [output]
         for unwanted in {"mono", "dual"} - set(kinds):
             (out_dir / f"{src.stem}-{unwanted}.pdf").unlink(missing_ok=True)
+        # Both repairs need the upload, so they run before it is removed.
         if do_whiteout:
-            # Must happen before the upload is removed: the source tells us
-            # where the original text was.
             STORE.update(job_id, stage="Cleaning up scan")
             for kind in kinds:
                 whiteout(src, out_dir / f"{src.stem}-{kind}.pdf",
                          dual_page_for if kind == "dual" else None)
+        # Cheap no-op unless the source really hid text under an opaque fill.
+        for kind in kinds:
+            try:
+                deghost(src, out_dir / f"{src.stem}-{kind}.pdf",
+                        dual_page_for if kind == "dual" else None)
+            except Exception as exc:      # noqa: BLE001 - cosmetic, never fatal
+                logger.warning("deghost failed for %s: %s", job_id, exc)
         src.unlink(missing_ok=True)  # the upload is reproducible; the output is not
         STORE.update(job_id, status="done", progress=1.0, stage="Completed",
                      kinds=kinds)

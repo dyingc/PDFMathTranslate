@@ -139,6 +139,26 @@ def _pricing_table():
                 assert set(period) == {"cache_hit", "cache_miss", "output"}, period
 
 
+@check("重影修复所依赖的 PyMuPDF 能力仍在")
+def _deghost_capabilities():
+    import pymupdf
+    for const in ("PDF_REDACT_TEXT_REMOVE", "PDF_REDACT_TEXT_NONE",
+                  "PDF_REDACT_IMAGE_PIXELS", "PDF_REDACT_IMAGE_NONE",
+                  "PDF_REDACT_LINE_ART_NONE"):
+        assert hasattr(pymupdf, const), f"PyMuPDF 缺少 {const}"
+    sig = inspect.signature(pymupdf.Page.apply_redactions).parameters
+    assert {"images", "graphics", "text"} <= set(sig), sorted(sig)
+    # get_texttrace must still expose draw order and render mode; without those
+    # we cannot tell a hidden layer from a visible one.
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "probe")
+    span = page.get_texttrace()[0]
+    for key in ("seqno", "type", "font", "size", "chars", "bbox"):
+        assert key in span, f"get_texttrace 不再提供 {key}"
+    doc.close()
+
+
 @check("版面模型入口仍在")
 def _layout_model():
     from pdf2zh.doclayout import ModelInstance, OnnxModel
