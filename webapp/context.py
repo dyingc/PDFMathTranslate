@@ -29,6 +29,7 @@ import json
 import logging
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -280,7 +281,8 @@ def _translate_chunk(tr, preamble: str, chunk: list) -> dict:
     return {}
 
 
-def prepare(tr, paragraphs: list, title: str = "", progress=None) -> tuple:
+def prepare(tr, paragraphs: list, title: str = "", progress=None,
+            threads: int = 1) -> tuple:
     """Fill pdf2zh's cache with context-aware translations. Returns (done, total).
 
     Whatever is left out stays uncached and is translated paragraph-by-paragraph
@@ -311,16 +313,27 @@ def prepare(tr, paragraphs: list, title: str = "", progress=None) -> tuple:
         logger.info("document profile: %s", profile)
 
     groups = chunks(unique)
-    done = 0
-    for n, group in enumerate(groups):
+    done = finished = 0
+    lock = threading.Lock()
+
+    def run(group):
+        nonlocal done, finished
         texts = dict(group)
-        for index, translation in _translate_chunk(tr, preamble, group).items():
-            key = cache_key(tr.job_id, texts[index])
-            if key is not None:
-                tr.cache.set(key, translation)
-            done += 1
-        if progress:
-            progress((n + 1) / len(groups))
+        result = _translate_chunk(tr, preamble, group)
+        with lock:
+            for index, translation in result.items():
+                key = cache_key(tr.job_id, texts[index])
+                if key is not None:
+                    tr.cache.set(key, translation)
+                done += 1
+            finished += 1
+            if progress:
+                progress(finished / len(groups))
+
+    # Chunks are independent by construction — each carries its own context —
+    # so they fan out over the same thread budget the layout pass would use.
+    with ThreadPoolExecutor(max_workers=max(1, threads)) as pool:
+        list(pool.map(run, groups))
     return done, len(unique)
 
 

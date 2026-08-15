@@ -58,6 +58,17 @@ install_translator()
 
 logger = logging.getLogger(__name__)
 
+# uvicorn configures its own loggers and leaves the root one at WARNING, which
+# would hide what this app reports about each job — the document profile it
+# inferred, how much of the document it managed to translate in context.
+_webapp_log = logging.getLogger("webapp")
+if not _webapp_log.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("[webapp] %(message)s"))
+    _webapp_log.addHandler(_handler)
+    _webapp_log.setLevel(logging.INFO)
+    _webapp_log.propagate = False
+
 BASE_DIR = Path(__file__).parent
 
 # `hint` is an i18n key resolved by the client; only the brand name is literal.
@@ -364,7 +375,8 @@ def _with_context(job_id: str, src: Path, api_key: str, model: str,
     tr = MeteredDeepseekTranslator(lang_in, lang_out, model,
                                    envs=_envs(api_key, model, effort, job_id))
     done, total = context.prepare(tr, paragraphs, context.title_of(src),
-                                  progress=lambda f: report(1, f))
+                                  progress=lambda f: report(1, f),
+                                  threads=LLM_THREADS)
     logger.info("job %s: %d/%d paragraphs translated with context",
                 job_id, done, total)
 
