@@ -148,7 +148,7 @@ _PROFILE_PROMPT = (
 )
 
 
-def _sample(paragraphs: list, budget: int = PROFILE_CHARS) -> str:
+def sample(paragraphs: list, budget: int = PROFILE_CHARS) -> str:
     """Excerpts spread over the whole document, not just its opening pages.
 
     Core terminology often appears first in a methods section halfway through;
@@ -168,9 +168,8 @@ def _sample(paragraphs: list, budget: int = PROFILE_CHARS) -> str:
     return "\n\n".join(picked)
 
 
-def describe(tr, paragraphs: list, title: str = "") -> dict:
+def describe(tr, excerpt: str, title: str = "") -> dict:
     """One call, or none: a title/field/summary block for every later prompt."""
-    excerpt = _sample(paragraphs)
     if not excerpt:
         return {}
     try:
@@ -343,41 +342,50 @@ def prepare(tr, paragraphs: list, profile: dict = None, progress=None,
 # ---------------------------------------------------------------------------
 # Remembering what a document is, between runs.
 
-def _digest(path: Path) -> str:
+def profile_key(excerpt: str) -> str:
+    """Identify a description by the text it was inferred from.
+
+    Not by the file: re-saving a PDF changes every byte of it while changing
+    nothing that the description depends on, and a document rewritten around
+    its metadata would wrongly reuse the old one. Keying on the excerpt states
+    the invariant exactly — same input to the same extraction, same result —
+    and costs nothing, because collecting the paragraphs is free and already
+    happens first.
+
+    It also means a two-page run and a whole-book run get different keys, which
+    is right: the description drawn from the whole book is the better one and
+    should not be displaced by the narrower one.
+    """
     import hashlib
-    h = hashlib.sha256()
-    with open(path, "rb") as fp:
-        for block in iter(lambda: fp.read(1 << 20), b""):
-            h.update(block)
-    return h.hexdigest()[:32]
+    return hashlib.sha256(excerpt.encode("utf-8")).hexdigest()[:32]
 
 
-def _profile_path(path: Path) -> Path:
+def _profile_path(key: str) -> Path:
     from webapp.store import DATA_DIR
     folder = DATA_DIR / "profiles"
     folder.mkdir(parents=True, exist_ok=True)
-    return folder / f"{_digest(path)}.json"
+    return folder / f"{key}.json"
 
 
-def load_profile(path: Path):
-    """The description already inferred for this exact file, if any.
+def load_profile(key: str):
+    """The description already inferred from this exact text, if any.
 
     Describing a document costs a call, and the field it yields is part of the
     cache key — so without this, a rerun could not even tell whether its
     paragraphs were cached until it had paid to ask what the document was
-    about again. Keyed by content, so an edited file gets described afresh.
+    about again.
     """
     try:
-        return json.loads(_profile_path(path).read_text())
+        return json.loads(_profile_path(key).read_text())
     except (OSError, ValueError):
         return None
 
 
-def save_profile(path: Path, profile: dict) -> None:
+def save_profile(key: str, profile: dict) -> None:
     if not profile:
         return          # a failed description must not be remembered as final
     try:
-        _profile_path(path).write_text(json.dumps(profile, ensure_ascii=False))
+        _profile_path(key).write_text(json.dumps(profile, ensure_ascii=False))
     except OSError as exc:      # noqa: BLE001 - a cache, not a requirement
         logger.warning("could not save document profile: %s", exc)
 

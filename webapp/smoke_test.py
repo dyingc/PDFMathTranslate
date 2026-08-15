@@ -321,6 +321,37 @@ def _context_keys():
     assert context.cache_key("smoke-keys", "2.1 Overview") is None
 
 
+@check("文档描述按提取所用文本缓存")
+def _profile_reuse():
+    from webapp import context
+
+    paras = [f"Paragraph number {i} with enough text to be sampled. " * 4
+             for i in range(30)]
+    excerpt = context.sample(paras)
+    assert excerpt, "采样为空"
+    key = context.profile_key(excerpt)
+    # Same text, same key — regardless of which file it came from.
+    assert context.profile_key(context.sample(list(paras))) == key
+    # Different text, different key.
+    assert context.profile_key(context.sample(paras[:5])) != key
+
+    path = context._profile_path(key)
+    existed = path.exists()
+    backup = path.read_bytes() if existed else None
+    try:
+        context.save_profile(key, {"field": "Machine Learning"})
+        assert context.load_profile(key) == {"field": "Machine Learning"}
+        # A failed description must not be remembered as final.
+        context.save_profile(key, {})
+        assert context.load_profile(key) == {"field": "Machine Learning"}
+        assert context.load_profile("0" * 32) is None
+    finally:
+        if existed:
+            path.write_bytes(backup)
+        else:
+            path.unlink(missing_ok=True)
+
+
 @check("公式占位符能安全穿过 JSON 编解码")
 def _context_placeholders():
     import json
