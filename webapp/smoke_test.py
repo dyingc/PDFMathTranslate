@@ -365,6 +365,20 @@ def _glossary():
     a = Glossary({"TIP": "TIP"})
     assert a.matching("just a tip for you") == []
 
+    # A term appears in several grammatical forms. Pinning one and leaving the
+    # others free is worse than having no glossary: on SPA.pdf "Soundness" was
+    # pinned to 可靠性 while the adjective "sound" drifted to 健全, and
+    # consistency fell from 83% to 64%.
+    s = Glossary({"Soundness": "可靠性"})
+    for text in ("the analysis is sound", "an unsound type system",
+                 "we argue soundness", "it behaves soundly"):
+        assert s.matching(text), f"{text!r} 没有匹配到 Soundness"
+    assert s.matching("the sky is blue") == []
+    # Stemming must not eat a word down to a fragment that matches anything.
+    assert Glossary._stem("Soundness") == "sound"
+    assert Glossary._stem("analysis") == "analysis"
+    assert Glossary._stem("Control flow graphs") == "control flow graph"
+
 
 @check("文档描述按提取所用文本缓存")
 def _profile_reuse():

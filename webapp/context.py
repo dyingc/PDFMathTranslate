@@ -249,6 +249,27 @@ class Glossary:
     # Below this length a term is an acronym — "TIP", "CFG" — where case is the
     # only thing separating it from an ordinary word, so it must match exactly.
     CASEFOLD_FROM = 4
+    # Endings that turn one term into another form of the same term. Stripped
+    # only from the last word, and only while what remains is still a word.
+    _ENDINGS = ("ness", "ions", "ing", "ion", "ity", "ed", "es", "ly", "s")
+    _STEM_MIN = 4
+
+    @classmethod
+    def _stem(cls, source: str) -> str:
+        head, _, last = source.lower().rpartition(" ")
+        for ending in cls._ENDINGS:
+            if not last.endswith(ending):
+                continue
+            stem = last[: -len(ending)]
+            if len(stem) < cls._STEM_MIN:
+                continue
+            # "analysis" and "bias" are not plurals; stripping the "s" would
+            # leave a fragment that matches words it has nothing to do with.
+            if ending == "s" and stem[-1] in "siu":
+                continue
+            last = stem
+            break
+        return f"{head} {last}".strip() if head else last
 
     def matching(self, text: str) -> list:
         """The terms that actually occur in this chunk, longest first.
@@ -256,16 +277,23 @@ class Glossary:
         Sending the whole glossary would push the real work down the prompt and
         cost tokens on every call; sending what appears is enough to pin it.
 
-        Matching ignores case for anything longer than an acronym. Extraction
-        reports terms as they are named — "Fixed point" — while the body writes
-        them as they are used — "fixed point". On SPA.pdf that mismatch meant
-        the agreed 不动点 was never once injected and the text ended up saying
-        定点 instead.
+        Matching ignores case, and matches on the stem, for anything longer
+        than an acronym. Both were learned the hard way on SPA.pdf.
+
+        Extraction reports a term as it would be named — "Fixed point" — while
+        the body writes it as it is used — "fixed point". Exact matching meant
+        the agreed 不动点 was injected into zero chunks; the text said 定点.
+
+        Worse, a term appears in several grammatical forms, and pinning one
+        while leaving the others free is actively harmful. "Soundness" was
+        pinned to 可靠性 and the adjective "sound" — a different string — drifted
+        to 健全. Consistency for that term fell from 83% without a glossary to
+        64% with one: the glossary itself split the document in two.
         """
         lowered = text.lower()
         with self._lock:
             hits = [(s, t) for s, t in self._terms.items()
-                    if (s.lower() in lowered if len(s) >= self.CASEFOLD_FROM
+                    if (self._stem(s) in lowered if len(s) >= self.CASEFOLD_FROM
                         else s in text)]
         hits.sort(key=lambda p: len(p[0]), reverse=True)
         return hits[:MAX_INJECTED]
@@ -331,6 +359,9 @@ def _rules(tr) -> str:
         "- Where a glossary is given, use exactly those translations. An entry "
         "whose translation equals its source must be left in its original "
         "form.\n"
+        "- A glossary entry covers every grammatical form of that term. If "
+        "\"soundness\" is given, then \"sound\", \"unsound\" and \"soundly\" "
+        "must be built on the same word, never on a different one.\n"
         "- Output the translation only, with no commentary.\n\n"
         'Reply with a JSON object {"segments": [{"id": <int>, "text": '
         "<translation>}], \"terms\": [{\"source\": <term>, \"target\": "
