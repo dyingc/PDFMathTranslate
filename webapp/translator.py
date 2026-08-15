@@ -32,6 +32,8 @@ class MeteredDeepseekTranslator(DeepseekTranslator):
         # note it down, so a whole layout run costs nothing and reveals exactly
         # which paragraphs the real run will ask for.
         "DEEPSEEK_COLLECT": "",
+        # The document's field, as inferred once per job. See below.
+        "DEEPSEEK_FIELD": "",
     }
 
     def __init__(self, lang_in, lang_out, model, envs=None, prompt=None,
@@ -60,6 +62,16 @@ class MeteredDeepseekTranslator(DeepseekTranslator):
         self.add_cache_impact_parameters("thinking", thinking["type"])
         self.add_cache_impact_parameters("reasoning_effort",
                                          effort if effort != "off" else "")
+
+        # Translations are produced under a description of the document, so a
+        # cached one is only safely reusable somewhere that description still
+        # holds. The field is the part of it coarse enough to be worth sharing:
+        # two machine-learning papers can trade translations, a legal contract
+        # and a physics paper cannot. Title and summary stay out of the key —
+        # they are unique per document and would give every file its own
+        # private cache, which is the same as having no cache.
+        self.add_cache_impact_parameters("field",
+                                         (self.envs.get("DEEPSEEK_FIELD") or "").lower())
 
         self._meter_client()
 

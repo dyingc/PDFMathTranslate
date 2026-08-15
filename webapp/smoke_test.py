@@ -253,7 +253,7 @@ def _context_cache_key():
 
     envs = {"DEEPSEEK_API_KEY": "sk-smoke", "DEEPSEEK_MODEL": "deepseek-v4-flash",
             "DEEPSEEK_EFFORT": "high", "DEEPSEEK_JOB_ID": "smoke",
-            "DEEPSEEK_COLLECT": ""}
+            "DEEPSEEK_COLLECT": "", "DEEPSEEK_FIELD": "Machine Learning"}
     ours = MeteredDeepseekTranslator("en", "zh", "deepseek-v4-flash", envs=envs)
     # Exactly how TranslateConverter builds it.
     theirs = converter.DeepseekTranslator("en", "zh", "deepseek-v4-flash",
@@ -263,6 +263,13 @@ def _context_cache_key():
     assert ours.cache.translate_engine_params == theirs.cache.translate_engine_params, (
         f"缓存键不一致:\n  ours   {ours.cache.translate_engine_params}\n"
         f"  theirs {theirs.cache.translate_engine_params}")
+
+    # The field is part of the key, so a document from another domain cannot be
+    # served a translation made under a different description.
+    other = MeteredDeepseekTranslator("en", "zh", "deepseek-v4-flash",
+                                      envs={**envs, "DEEPSEEK_FIELD": "Law"})
+    assert other.cache.translate_engine_params != ours.cache.translate_engine_params, \
+        "field 没有进入缓存键"
 
 
 @check("采集模式与琐碎段落判定行为正确")

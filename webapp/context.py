@@ -143,7 +143,7 @@ def cache_key(job_id: str, text: str):
 _PROFILE_PROMPT = (
     "Below are excerpts from a document. Reply with a JSON object with keys "
     '"title", "field" and "summary". "title" is the document\'s title, "field" '
-    'its academic or technical field, "summary" at most 40 words on what it is '
+    'its academic or technical field, "summary" at most 25 words on what it is '
     "about. Use the language of the document itself."
 )
 
@@ -281,7 +281,7 @@ def _translate_chunk(tr, preamble: str, chunk: list) -> dict:
     return {}
 
 
-def prepare(tr, paragraphs: list, title: str = "", progress=None,
+def prepare(tr, paragraphs: list, profile: dict = None, progress=None,
             threads: int = 1) -> tuple:
     """Fill pdf2zh's cache with context-aware translations. Returns (done, total).
 
@@ -307,10 +307,7 @@ def prepare(tr, paragraphs: list, title: str = "", progress=None,
 
     if not unique:
         return 0, 0
-    profile = describe(tr, paragraphs, title)
-    preamble = _preamble(tr, profile)
-    if profile:
-        logger.info("document profile: %s", profile)
+    preamble = _preamble(tr, profile or {})
 
     groups = chunks(unique)
     done = finished = 0
@@ -330,11 +327,59 @@ def prepare(tr, paragraphs: list, title: str = "", progress=None,
             if progress:
                 progress(finished / len(groups))
 
-    # Chunks are independent by construction — each carries its own context —
+    # The first chunk goes alone, to warm DeepSeek's prefix cache. Measured on a
+    # 33-call job that fanned out immediately, only 23% of input tokens were
+    # cached: the whole first wave of parallel calls left before the preamble
+    # had been seen once, and a cache miss costs fifty times a hit. This is not
+    # a wasted probe — it is real work, just not concurrent.
+    run(groups[0])
+    # The rest are independent by construction, each carrying its own context,
     # so they fan out over the same thread budget the layout pass would use.
     with ThreadPoolExecutor(max_workers=max(1, threads)) as pool:
-        list(pool.map(run, groups))
+        list(pool.map(run, groups[1:]))
     return done, len(unique)
+
+
+# ---------------------------------------------------------------------------
+# Remembering what a document is, between runs.
+
+def _digest(path: Path) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as fp:
+        for block in iter(lambda: fp.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()[:32]
+
+
+def _profile_path(path: Path) -> Path:
+    from webapp.store import DATA_DIR
+    folder = DATA_DIR / "profiles"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder / f"{_digest(path)}.json"
+
+
+def load_profile(path: Path):
+    """The description already inferred for this exact file, if any.
+
+    Describing a document costs a call, and the field it yields is part of the
+    cache key — so without this, a rerun could not even tell whether its
+    paragraphs were cached until it had paid to ask what the document was
+    about again. Keyed by content, so an edited file gets described afresh.
+    """
+    try:
+        return json.loads(_profile_path(path).read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def save_profile(path: Path, profile: dict) -> None:
+    if not profile:
+        return          # a failed description must not be remembered as final
+    try:
+        _profile_path(path).write_text(json.dumps(profile, ensure_ascii=False))
+    except OSError as exc:      # noqa: BLE001 - a cache, not a requirement
+        logger.warning("could not save document profile: %s", exc)
 
 
 def title_of(path: Path) -> str:
