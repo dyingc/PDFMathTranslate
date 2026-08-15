@@ -399,6 +399,26 @@ def _glossary():
         assert m.matching(text), f"{text!r} 没有匹配到术语"
 
 
+@check("术语必须在摘录里露过面才被采纳")
+def _grounded_terms():
+    """The frequency list names bare words with no context. A translation
+    guessed from one gets pinned for the whole document by first-writer-wins,
+    which is a systematic error — worse than the drift the glossary cures."""
+    from webapp.context import _grounded
+
+    excerpt = ("A sound analysis over-approximates behaviour. "
+               "We use context-sensitive call strings.")
+    triples = [
+        ("soundness", "可靠性", ["sound"]),          # visible via a form
+        ("Context sensitivity", "上下文敏感", ["context-sensitive"]),
+        ("call string", "调用串", []),               # visible, plural in text
+        ("widening", "加宽", []),                    # frequency list only
+        ("Galois connection", "伽罗瓦连接", ["galois"]),
+    ]
+    kept = [s for s, _, _ in _grounded(triples, excerpt)]
+    assert kept == ["soundness", "Context sensitivity", "call string"], kept
+
+
 @check("文档描述按提取所用文本缓存")
 def _profile_reuse():
     from webapp import context

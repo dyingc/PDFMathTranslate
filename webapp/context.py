@@ -152,9 +152,12 @@ _PROFILE_PROMPT = (
     "the same string as the translation for anything that should keep its "
     'original form. "forms" lists the other spellings of the same term — '
     'inflections, plurals, hyphenations, "sound" and "unsound" for '
-    '"soundness" — exactly as they are written in the text. Work from the '
-    "word frequencies as well as the excerpts: a frequent word list is the "
-    "whole document, the excerpts are only part of it."
+    '"soundness" — exactly as they are written in the text.\n\n'
+    "Propose a term ONLY if it appears in the excerpts, where you can see how "
+    "it is used; a translation guessed from a bare word would be wrong for the "
+    "whole document. The frequency list is for judging which of those terms "
+    'matter and for collecting their other spellings into "forms" — a spelling '
+    "needs no context, only recognition."
 )
 
 
@@ -251,6 +254,27 @@ def sample(paragraphs: list, budget: int = PROFILE_CHARS) -> str:
     return "\n\n".join(p for p in picked if p is not None)
 
 
+def _grounded(triples: list, excerpt: str) -> list:
+    """Drop terms the excerpt never shows, so none is translated from a bare word.
+
+    A term counts as visible if the excerpt contains its name or any of the
+    spellings reported for it — the reported name may be a tidied-up form of
+    what the text actually writes.
+    """
+    flat = Glossary._flat(excerpt).lower()
+    kept, dropped = [], []
+    for source, target, forms in triples:
+        shown = [source, *(forms or ())]
+        if any(Glossary._flat(str(f)).lower() in flat for f in shown if f):
+            kept.append((source, target, forms))
+        else:
+            dropped.append(source)
+    if dropped:
+        logger.info("glossary: %d proposed terms not visible in the excerpt, "
+                    "left for chunk extraction: %s", len(dropped), dropped[:8])
+    return kept
+
+
 def describe(tr, excerpt: str, title: str = "", words: str = "",
              terms: int = 25) -> dict:
     """One call, or none: a title/field/summary block for every later prompt."""
@@ -275,8 +299,16 @@ def describe(tr, excerpt: str, title: str = "", words: str = "",
                if k in ("title", "field", "summary") and v}
     # Seeding the glossary from the same call is what keeps the early chunks
     # from each coining their own translation for the document's core terms.
+    #
+    # A term is only accepted if it is visible in the excerpt. The frequency
+    # list names words with no context at all, and a translation guessed from a
+    # bare word gets pinned for the whole document by first-writer-wins — a
+    # systematic error, which is far worse than the drift it is meant to cure.
+    # Terms that appear only outside the excerpt are not lost: chunk-by-chunk
+    # extraction picks them up later, where the context is complete by
+    # construction.
     seed = Glossary()
-    seed.add(_pairs(data))
+    seed.add(_grounded(_pairs(data), excerpt))
     if seed.terms():
         profile["terms"] = seed.terms()
         profile["forms"] = seed.forms()
