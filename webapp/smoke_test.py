@@ -363,6 +363,19 @@ def _glossary():
     assert c.terms() == {"Fixed point": "不动点"}, c.terms()
     assert c.fixups() == {"定点": "不动点"}
 
+    # A glossary can disagree with itself across lengths. NSA's held both
+    # `token -> token` and `hierarchical token modeling -> 层次化标记建模`, and
+    # 标记 spread from the longer entry through the abstract.
+    c = Glossary({"token": "token"})
+    c.add([("token compression", "token压缩"),                # honours it
+           ("hierarchical token modeling", "层次化标记建模")])  # does not
+    assert c.terms() == {"token": "token", "token compression": "token压缩"}, c.terms()
+    # The shorter term is the general decision, so it is the longer one that
+    # goes — even when the longer one arrives first.
+    d = Glossary()
+    d.add([("token selection", "标记选择"), ("token", "token")])
+    assert "token" in d.terms()
+
     # An acronym is only itself: case is all that separates TIP from tip.
     a = Glossary({"TIP": "TIP"})
     assert a.matching("just a tip for you") == []

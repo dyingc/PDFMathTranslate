@@ -353,9 +353,14 @@ class Glossary:
             form.lower() if len(form) >= self.CASEFOLD_FROM else form, term)
 
     def add(self, entries) -> None:
-        """Record (source, target) or (source, target, forms) triples."""
+        """Record (source, target) or (source, target, forms) triples.
+
+        Shortest first, so a general decision is on record before the phrases
+        built on it are judged against it — otherwise whether a contradiction
+        is caught would depend on the order the model happened to list them in.
+        """
         with self._lock:
-            for entry in entries:
+            for entry in sorted(entries, key=lambda e: len(str(e[0]))):
                 source, target, forms = (tuple(entry) + (None,))[:3]
                 source, target = str(source).strip(), str(target).strip()
                 if not source or not target or len(source) > 80:
@@ -366,12 +371,52 @@ class Glossary:
                 key = self._flat(source)
                 key = key.lower() if len(key) >= self.CASEFOLD_FROM else key
                 term = self._forms.get(key, source)
+                clash = self._contradicts(term, target)
+                if clash:
+                    logger.info("glossary: %r -> %r contradicts %r, dropped",
+                                term, target, clash)
+                    continue
                 winner = self._terms.setdefault(term, target)
                 if winner != target:
                     self._losers[target] = winner
                 self._learn(term, source)
                 for form in forms or ():
                     self._learn(term, form)
+
+    def _contradicts(self, source: str, target: str):
+        """A shorter term this entry contains but does not honour, if any.
+
+        A glossary can disagree with itself across lengths, and it did: NSA's
+        held both `token -> token` and `hierarchical token modeling ->
+        层次化标记建模`. The longer entry silently overrode the shorter one
+        wherever it applied, and 标记 spread from it through the abstract.
+
+        A longer term is a phrase built from shorter ones, so its translation
+        should keep something of theirs. When it keeps nothing at all, the
+        longer entry is the one to drop: the shorter term is the more general
+        decision and the one already in use elsewhere.
+
+        Both tests are deliberately weak, because a strict one was tried and
+        was wrong far more often than right. It has to be a whole word —
+        "attention" is not a part of "FlashAttention", "native" is not a part
+        of "alternative" — and sharing any character is enough, so that
+        `sparse -> 稀疏的` does not condemn `稀疏注意力策略` over a 的. What
+        survives is the case that matters: renderings with nothing whatsoever
+        in common, like `token -> token` against `层次化标记建模`.
+        """
+        words = self._flat(source).lower().split()
+        for other, rendering in self._terms.items():
+            small = self._flat(other).lower()
+            parts = small.split()
+            n = len(parts)
+            if small == self._flat(source).lower() or len(small) < 3:
+                continue
+            if not any(words[i:i + n] == parts for i in range(len(words) - n + 1)):
+                continue
+            if set(rendering) & set(target):
+                continue
+            return f"{other} -> {rendering}"
+        return None
 
     # Below this length a term is an acronym — "TIP", "CFG" — where case is the
     # only thing separating it from an ordinary word, so it must match exactly.
