@@ -190,6 +190,47 @@ def _verbatim_injection():
     assert list(box.xyxy) == [1, 2, 3, 4] and box.cls == 7, "YoloBox 结构已改变"
 
 
+@check("被区域切断的文本行会被修复为单一段落")
+def _line_healing():
+    import numpy as np
+    import pymupdf
+    from pdf2zh.doclayout import YoloBox
+    from webapp.verbatim import heal_cuts
+
+    class Result:
+        names = {0: "plain text", 1: "figure"}
+
+        def __init__(self, boxes):
+            self.boxes = boxes
+
+    line = pymupdf.Rect(161, 261, 484, 271)
+    # The real case from SPA.pdf: a 0.47-confidence region covering the middle
+    # of a line, which split it into "More ex" / ... / "n of TIP.".
+    cutter = YoloBox(data=np.array([195.0, 257.0, 442.0, 270.0, 0.47, 0.0]))
+    result = Result([cutter])
+    assert heal_cuts(result, [line]) == 1
+    x0, _, x1, _ = [float(v) for v in np.array(result.boxes[0].xyxy).squeeze()]
+    assert x0 <= line.x0 and x1 >= line.x1, (x0, x1)
+
+    # A region that already holds the whole line is left alone, as is one that
+    # merely grazes it, and preserved regions are never widened.
+    for box in (YoloBox(data=np.array([150.0, 255.0, 500.0, 275.0, 0.9, 0.0])),
+                YoloBox(data=np.array([195.0, 269.5, 442.0, 300.0, 0.9, 0.0])),
+                YoloBox(data=np.array([195.0, 257.0, 442.0, 270.0, 0.9, 1.0]))):
+        assert heal_cuts(Result([box]), [line]) == 0, box.xyxy
+
+    # A neighbouring column must stay out of reach. This is what makes widening
+    # safe: a line never spans two columns, so a region sitting in one of them
+    # can only ever grow to that column's width.
+    left = pymupdf.Rect(60, 261, 280, 271)
+    right = pymupdf.Rect(320, 261, 540, 271)
+    narrow = YoloBox(data=np.array([100.0, 257.0, 200.0, 270.0, 0.5, 0.0]))
+    result = Result([narrow])
+    heal_cuts(result, [left, right])
+    x0, _, x1, _ = [float(v) for v in np.array(result.boxes[0].xyxy).squeeze()]
+    assert (x0, x1) == (left.x0, left.x1), f"expected {left.x0}-{left.x1}, got {x0}-{x1}"
+
+
 @check("链接重建所依赖的 PyMuPDF 能力仍在")
 def _link_capabilities():
     import pymupdf
