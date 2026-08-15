@@ -29,6 +29,7 @@ import json
 import logging
 import re
 import threading
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -145,12 +146,73 @@ _PROFILE_PROMPT = (
     '"title", "field", "summary" and "terms". "title" is the document\'s '
     'title, "field" its academic or technical field, "summary" at most 25 '
     "words on what it is about; use the language of the document itself for "
-    'these three. "terms" is a list of at most 25 objects {"source", '
-    '"target"}: the document\'s key technical terms, proper nouns and '
-    "acronyms, with the translation to use for each in {lang_out}. Give the "
-    "same string as the translation for anything that should keep its "
-    "original form."
+    'these three. "terms" is a list of at most {terms} objects {"source", '
+    '"target", "forms"}: the document\'s key technical terms, proper nouns '
+    'and acronyms, with the translation to use for each in {lang_out}. Give '
+    "the same string as the translation for anything that should keep its "
+    'original form. "forms" lists the other spellings of the same term — '
+    'inflections, plurals, hyphenations, "sound" and "unsound" for '
+    '"soundness" — exactly as they are written in the text. Work from the '
+    "word frequencies as well as the excerpts: a frequent word list is the "
+    "whole document, the excerpts are only part of it."
 )
+
+
+# Words too common to be terms, and too common to be worth listing.
+_STOP = frozenset("""a an the and or but if then else of in on at to for from by
+with without into over under about as is are was were be been being do does did
+this that these those it its we our you your they their he she his her not no
+than such can may might must shall should will would have has had also more most
+other some any each which what when where who whom whose there here how why all
+both few many much only own same so too very just now new one two three first
+second next last other another between during before after above below up down
+out off again further once because while until although however therefore thus
+hence e.g i.e et al fig figure section chapter table example note see let us""".split())
+
+_WORD = re.compile(r"[A-Za-z][A-Za-z'’-]{1,}")
+
+
+def vocabulary(paragraphs: list, unigrams: int = 120, bigrams: int = 60) -> str:
+    """The document's most frequent content words and pairs, with counts.
+
+    Sampling text can only ever show the model part of the document, and a term
+    it never sees is a term it cannot pin. Counting is different: it runs over
+    *everything*, costs nothing, and ranks by exactly the property that decides
+    whether a term matters — how often it appears.
+
+    It is also how the variants arrive. "sound", "soundness" and "unsound" all
+    show up in the list as separate frequent words, so the model can see they
+    belong together and say so, rather than us guessing with suffix rules.
+    """
+    words = Counter()
+    pairs = Counter()
+    for para in paragraphs:
+        found = [m.group(0).lower() for m in _WORD.finditer(para)]
+        for word in found:
+            if len(word) > 2 and word not in _STOP:
+                words[word] += 1
+        for left, right in zip(found, found[1:]):
+            if left not in _STOP and right not in _STOP \
+                    and len(left) > 2 and len(right) > 2:
+                pairs[f"{left} {right}"] += 1
+    lines = [f"{w} ({n})" for w, n in words.most_common(unigrams) if n > 2]
+    lines += [f"{p} ({n})" for p, n in pairs.most_common(bigrams) if n > 2]
+    return ", ".join(lines)
+
+
+def sizing(paragraphs: list) -> tuple:
+    """How much text to show, and how many terms to ask for.
+
+    Input is nearly free — 20k characters of excerpt is about ¥0.01 — while the
+    number of terms is what actually costs, being output. So the excerpt scales
+    generously with the document and the term count carefully: a book yields
+    far more terminology than a paper, but a list long enough to swamp the
+    prompt would be paid for on every chunk that follows.
+    """
+    total = sum(len(p) for p in paragraphs)
+    excerpt = min(max(3000, total // 20), 20000)
+    terms = min(max(25, total // 4000), 80)
+    return excerpt, terms
 
 
 def sample(paragraphs: list, budget: int = PROFILE_CHARS) -> str:
@@ -173,14 +235,18 @@ def sample(paragraphs: list, budget: int = PROFILE_CHARS) -> str:
     return "\n\n".join(picked)
 
 
-def describe(tr, excerpt: str, title: str = "") -> dict:
+def describe(tr, excerpt: str, title: str = "", words: str = "",
+             terms: int = 25) -> dict:
     """One call, or none: a title/field/summary block for every later prompt."""
     if not excerpt:
         return {}
-    prompt = _PROFILE_PROMPT.replace("{lang_out}", tr.lang_out)
+    prompt = (_PROFILE_PROMPT.replace("{lang_out}", tr.lang_out)
+                             .replace("{terms}", str(terms)))
+    body = f"Excerpts:\n{excerpt}"
+    if words:
+        body = f"Most frequent words in the whole document:\n{words}\n\n{body}"
     try:
-        content = _ask(tr, [{"role": "user",
-                             "content": f"{prompt}\n\n{excerpt}"}])
+        content = _ask(tr, [{"role": "user", "content": f"{prompt}\n\n{body}"}])
         data = json.loads(content)
         if not isinstance(data, dict):
             return {}
@@ -193,13 +259,11 @@ def describe(tr, excerpt: str, title: str = "") -> dict:
                if k in ("title", "field", "summary") and v}
     # Seeding the glossary from the same call is what keeps the early chunks
     # from each coining their own translation for the document's core terms.
-    terms = {}
-    for source, target in _pairs(data):
-        source, target = str(source).strip(), str(target).strip()
-        if source and target and len(source) <= 80:
-            terms.setdefault(source, target)
-    if terms:
-        profile["terms"] = terms
+    seed = Glossary()
+    seed.add(_pairs(data))
+    if seed.terms():
+        profile["terms"] = seed.terms()
+        profile["forms"] = seed.forms()
     return profile
 
 
@@ -222,37 +286,48 @@ class Glossary:
     drifts across the document.
     """
 
-    def __init__(self, initial: dict = None) -> None:
+    def __init__(self, initial: dict = None, variants: dict = None) -> None:
         self._lock = threading.Lock()
         self._terms = {}
-        self._index = {}         # normalised source -> the spelling we kept
+        self._forms = {}         # a form as written -> the term it belongs to
         self._losers = {}        # rejected translation -> the one that won
-        self.add((initial or {}).items())
+        seen = variants or {}
+        self.add((source, target, seen.get(source))
+                 for source, target in (initial or {}).items())
 
-    def _norm(self, source: str) -> str:
-        return source.lower() if len(source) >= self.CASEFOLD_FROM else source
+    def _learn(self, term: str, form: str) -> None:
+        form = self._flat(str(form)).strip()
+        if not form or len(form) > 80:
+            return
+        # Case is only meaningful for acronyms, where it is the sole thing
+        # separating TIP from tip.
+        self._forms.setdefault(
+            form.lower() if len(form) >= self.CASEFOLD_FROM else form, term)
 
-    def add(self, pairs) -> None:
+    def add(self, entries) -> None:
+        """Record (source, target) or (source, target, forms) triples."""
         with self._lock:
-            for source, target in pairs:
+            for entry in entries:
+                source, target, forms = (tuple(entry) + (None,))[:3]
                 source, target = str(source).strip(), str(target).strip()
                 if not source or not target or len(source) > 80:
                     continue
-                # "Fixed point" and "fixed point" are one term, not two, or the
-                # glossary would hold both and contradict itself.
-                key = self._norm(source)
-                kept = self._index.setdefault(key, source)
-                winner = self._terms.setdefault(kept, target)
+                # A term is identified by any form of it that we have seen, so
+                # "Soundness" and "sound" are one entry, not two contradictory
+                # ones.
+                key = self._flat(source)
+                key = key.lower() if len(key) >= self.CASEFOLD_FROM else key
+                term = self._forms.get(key, source)
+                winner = self._terms.setdefault(term, target)
                 if winner != target:
                     self._losers[target] = winner
+                self._learn(term, source)
+                for form in forms or ():
+                    self._learn(term, form)
 
     # Below this length a term is an acronym — "TIP", "CFG" — where case is the
     # only thing separating it from an ordinary word, so it must match exactly.
     CASEFOLD_FROM = 4
-    # Endings that turn one term into another form of the same term. Stripped
-    # only from the last word, and only while what remains is still a word.
-    _ENDINGS = ("ness", "ions", "ing", "ion", "ity", "ed", "es", "ly", "s")
-    _STEM_MIN = 4
 
     @staticmethod
     def _flat(text: str) -> str:
@@ -261,26 +336,10 @@ class Glossary:
         71% of the terms extracted from a real book are more than one word, and
         English writes the same compound both ways depending on where it sits:
         "context sensitivity" in the noun position, "context-sensitive" in the
-        adjective one. Without this, neither spelling finds the other.
+        adjective one. This is typography, not morphology — worth doing in code
+        because it is the same in every language that uses the Latin script.
         """
         return " ".join(text.replace("-", " ").split())
-
-    @classmethod
-    def _stem(cls, source: str) -> str:
-        head, _, last = cls._flat(source).lower().rpartition(" ")
-        for ending in cls._ENDINGS:
-            if not last.endswith(ending):
-                continue
-            stem = last[: -len(ending)]
-            if len(stem) < cls._STEM_MIN:
-                continue
-            # "analysis" and "bias" are not plurals; stripping the "s" would
-            # leave a fragment that matches words it has nothing to do with.
-            if ending == "s" and stem[-1] in "siu":
-                continue
-            last = stem
-            break
-        return f"{head} {last}".strip() if head else last
 
     def matching(self, text: str) -> list:
         """The terms that actually occur in this chunk, longest first.
@@ -288,30 +347,39 @@ class Glossary:
         Sending the whole glossary would push the real work down the prompt and
         cost tokens on every call; sending what appears is enough to pin it.
 
-        Matching ignores case, and matches on the stem, for anything longer
-        than an acronym. Both were learned the hard way on SPA.pdf.
+        A term is looked for under every form of it that has been reported,
+        because a term named "Soundness" is written "sound", "unsound" and
+        "soundly" in the body. Pinning one form and leaving the others free is
+        worse than having no glossary at all: on SPA.pdf "Soundness" was pinned
+        to 可靠性 while "sound" drifted to 健全, and consistency for that term
+        fell from 83% without a glossary to 64% with one.
 
-        Extraction reports a term as it would be named — "Fixed point" — while
-        the body writes it as it is used — "fixed point". Exact matching meant
-        the agreed 不动点 was injected into zero chunks; the text said 定点.
-
-        Worse, a term appears in several grammatical forms, and pinning one
-        while leaving the others free is actively harmful. "Soundness" was
-        pinned to 可靠性 and the adjective "sound" — a different string — drifted
-        to 健全. Consistency for that term fell from 83% without a glossary to
-        64% with one: the glossary itself split the document in two.
+        Which strings are forms of which term is asked of the model rather than
+        derived here. Suffix rules would be English-only — `lang_in` is a
+        setting — and would still miss analysis/analyses or index/indices,
+        exactly the words a technical document leans on.
         """
-        lowered = self._flat(text).lower()
+        flat = self._flat(text)
+        lowered = flat.lower()
         with self._lock:
-            hits = [(s, t) for s, t in self._terms.items()
-                    if (self._stem(s) in lowered if len(s) >= self.CASEFOLD_FROM
-                        else s in text)]
+            found = {self._forms[form] for form in self._forms
+                     if (form in lowered if len(form) >= self.CASEFOLD_FROM
+                         else form in flat)}
+            hits = [(s, self._terms[s]) for s in found if s in self._terms]
         hits.sort(key=lambda p: len(p[0]), reverse=True)
         return hits[:MAX_INJECTED]
 
     def terms(self) -> dict:
         with self._lock:
             return dict(self._terms)
+
+    def forms(self) -> dict:
+        """The spellings seen for each term, so a later run starts knowing them."""
+        out = {}
+        with self._lock:
+            for form, term in self._forms.items():
+                out.setdefault(term, []).append(form)
+        return out
 
     def fixups(self) -> dict:
         """Rejected renderings to rewrite, and the ones that replace them.
@@ -378,11 +446,12 @@ def _rules(tr) -> str:
         "- Output the translation only, with no commentary.\n\n"
         'Reply with a JSON object {"segments": [{"id": <int>, "text": '
         "<translation>}], \"terms\": [{\"source\": <term>, \"target\": "
-        "<translation>}]} . \"segments\" holds exactly one entry per input "
-        "segment, with the same ids. \"terms\" holds the technical terms, "
-        "proper nouns and acronyms you translated that are NOT already in the "
-        "glossary, spelled exactly as in the source; give the same string as "
-        "the translation for anything that should stay in its original form."
+        "<translation>}]} . \"segments\" "
+        "holds exactly one entry per input segment, with the same ids. "
+        "\"terms\" holds the technical terms, proper nouns and acronyms you "
+        "translated that are NOT already in the glossary, spelled exactly as "
+        "in the source; give the same string as the translation for anything "
+        "that should stay in its original form."
     )
 
 
@@ -413,16 +482,20 @@ def _ask(tr, messages: list) -> str:
 
 
 def _pairs(data) -> list:
-    """(source, target) pairs from a reply's "terms", ignoring any malformed.
+    """(source, target, forms) triples from a reply's "terms".
 
     The glossary is an optimisation; a model that gets its shape wrong must
-    cost us the terms, never the translations that came with them.
+    cost us the terms, never the translations that came with them — so a
+    malformed entry, or a malformed "forms", is dropped rather than raised.
     """
     out = []
     for item in data.get("terms") or ():
         try:
-            out.append((item["source"], item["target"]))
-        except (TypeError, KeyError):
+            forms = item.get("forms") or ()
+            forms = [f for f in forms if isinstance(f, str)] \
+                if isinstance(forms, (list, tuple)) else ()
+            out.append((item["source"], item["target"], forms))
+        except (TypeError, KeyError, AttributeError):
             continue
     return out
 
@@ -497,7 +570,7 @@ def prepare(tr, paragraphs: list, profile: dict = None, progress=None,
         return 0, 0
     profile = profile or {}
     preamble = _preamble(tr, profile)
-    glossary = Glossary(profile.get("terms"))
+    glossary = Glossary(profile.get("terms"), profile.get("forms"))
 
     groups = chunks(unique)
     done = finished = 0
@@ -546,6 +619,7 @@ def prepare(tr, paragraphs: list, profile: dict = None, progress=None,
         logger.info("glossary: %d conflicting renderings rewritten in %d "
                     "paragraphs", len(fixups), repaired)
     profile["terms"] = glossary.terms()
+    profile["forms"] = glossary.forms()
     return done, len(unique)
 
 

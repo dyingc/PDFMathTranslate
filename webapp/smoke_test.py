@@ -346,8 +346,10 @@ def _glossary():
     # Malformed entries cost the terms, never the translation that came with
     # them, and only terms present in the chunk are injected.
     from webapp.context import _pairs
-    assert _pairs({"terms": [{"source": "a", "target": "b"}, {"oops": 1}, None]}) \
-        == [("a", "b")]
+    assert _pairs({"terms": [{"source": "a", "target": "b", "forms": ["as"]},
+                             {"source": "c", "target": "d", "forms": "bad"},
+                             {"oops": 1}, None]}) == [("a", "b", ["as"]),
+                                                      ("c", "d", ())]
     assert dict(g.matching("we discuss program slicing here")) == \
         {"program slicing": "程序切片"}
     assert g.matching("nothing relevant") == []
@@ -369,21 +371,27 @@ def _glossary():
     # others free is worse than having no glossary: on SPA.pdf "Soundness" was
     # pinned to 可靠性 while the adjective "sound" drifted to 健全, and
     # consistency fell from 83% to 64%.
-    s = Glossary({"Soundness": "可靠性"})
+    # The forms are the ones the model reported seeing, not ones derived here:
+    # suffix rules would be English-only and would still miss analysis/analyses.
+    s = Glossary({"Soundness": "可靠性"},
+                 {"Soundness": ["sound", "unsound", "soundly"]})
     for text in ("the analysis is sound", "an unsound type system",
                  "we argue soundness", "it behaves soundly"):
         assert s.matching(text), f"{text!r} 没有匹配到 Soundness"
     assert s.matching("the sky is blue") == []
-    # Stemming must not eat a word down to a fragment that matches anything.
-    assert Glossary._stem("Soundness") == "sound"
-    assert Glossary._stem("analysis") == "analysis"
-    assert Glossary._stem("Control flow graphs") == "control flow graph"
-
+    # A later chunk reporting a known form as if it were its own term must join
+    # the term it belongs to, and its rendering must lose — this is exactly the
+    # split that made the glossary harmful: 可靠性 for the noun, 健全 for the
+    # adjective, living side by side as two entries.
+    s.add([("sound", "健全")])
+    assert s.terms() == {"Soundness": "可靠性"}, s.terms()
+    assert s.fixups() == {"健全": "可靠性"}
     # 71% of the terms extracted from a real book are more than one word, and
     # English writes a compound with a hyphen in the adjective position and a
     # space in the noun position. Either spelling has to find the other.
     m = Glossary({"Context sensitivity": "上下文敏感",
-                  "fixed-point algorithms": "不动点算法"})
+                  "fixed-point algorithms": "不动点算法"},
+                 {"Context sensitivity": ["context-sensitive"]})
     for text in ("a context-sensitive analysis",
                  "the context sensitivity of it",
                  "using fixed point algorithms",

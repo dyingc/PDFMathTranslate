@@ -380,14 +380,17 @@ def _with_context(job_id: str, src: Path, api_key: str, model: str,
 
     # Describe the document before anything is cached: the field it yields is
     # part of the cache key, so it has to be known before the first lookup.
-    excerpt = context.sample(paragraphs)
+    budget, want = context.sizing(paragraphs)
+    excerpt = context.sample(paragraphs, budget)
     key = context.profile_key(excerpt)
     profile = context.load_profile(key)
     if profile is None:
         probe = MeteredDeepseekTranslator(
             lang_in, lang_out, model,
             envs=_envs(api_key, model, effort, job_id))
-        profile = context.describe(probe, excerpt, context.title_of(src))
+        profile = context.describe(probe, excerpt, context.title_of(src),
+                                   words=context.vocabulary(paragraphs),
+                                   terms=want)
         context.save_profile(key, profile)
         logger.info("job %s: document profile: %s", job_id, profile or "none")
     else:
