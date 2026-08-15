@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 # does not start summarising — long outputs drift.
 CHUNK_CHARS = 2000
 PROFILE_CHARS = 6000     # sampled across the document, not just the front
-MAX_TERMS_SAMPLE = 40
+CLIP = 600           # per paragraph, so one long one cannot eat the budget
 
 # A paragraph with no letter in it (page numbers, "1.", stray symbols) or one or
 # two characters carries nothing to translate, and sending it is how "n" becomes
@@ -220,19 +220,35 @@ def sample(paragraphs: list, budget: int = PROFILE_CHARS) -> str:
 
     Core terminology often appears first in a methods section halfway through;
     a prefix sample would miss exactly the words that most need pinning down.
+
+    Spending the whole budget matters: an earlier version guessed the stride
+    from a constant and systematically undershot, taking 1604 characters where
+    3000 were allowed. Whatever it left unspent was coverage given away for
+    nothing, since the excerpt is the cheap half of this call.
     """
-    usable = [p for p in paragraphs if not is_trivial(p)]
+    usable = [p[:CLIP] for p in paragraphs if not is_trivial(p)]
     if not usable:
         return ""
-    step = max(1, len(usable) * 200 // max(budget, 1))
-    picked, total = [], 0
-    for para in usable[::step]:
-        para = para[:600]
-        if total + len(para) > budget:
+    total = sum(len(p) for p in usable)
+    if total <= budget:
+        return "\n\n".join(usable)
+
+    # Walk the document at a stride, then walk it again offset by one, until
+    # the budget is full. Spread first, density second.
+    stride = max(2, round(total / budget))
+    picked, taken, used = [None] * len(usable), 0, 0
+    for offset in range(stride):
+        for i in range(offset, len(usable), stride):
+            if picked[i] is not None:
+                continue
+            if used + len(usable[i]) > budget:
+                continue
+            picked[i] = usable[i]
+            used += len(usable[i])
+            taken += 1
+        if used >= budget * 0.98:
             break
-        picked.append(para)
-        total += len(para)
-    return "\n\n".join(picked)
+    return "\n\n".join(p for p in picked if p is not None)
 
 
 def describe(tr, excerpt: str, title: str = "", words: str = "",
