@@ -352,6 +352,19 @@ def _glossary():
         {"program slicing": "程序切片"}
     assert g.matching("nothing relevant") == []
 
+    # Extraction names a term "Fixed point"; the body writes "fixed point".
+    # On SPA.pdf that mismatch meant the agreed 不动点 was never injected.
+    c = Glossary({"Fixed point": "不动点"})
+    assert dict(c.matching("the least fixed point of f")) == {"Fixed point": "不动点"}
+    # ...and the two spellings must not become two contradictory entries.
+    c.add([("fixed point", "定点")])
+    assert c.terms() == {"Fixed point": "不动点"}, c.terms()
+    assert c.fixups() == {"定点": "不动点"}
+
+    # An acronym is only itself: case is all that separates TIP from tip.
+    a = Glossary({"TIP": "TIP"})
+    assert a.matching("just a tip for you") == []
+
 
 @check("文档描述按提取所用文本缓存")
 def _profile_reuse():

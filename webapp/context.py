@@ -224,8 +224,13 @@ class Glossary:
 
     def __init__(self, initial: dict = None) -> None:
         self._lock = threading.Lock()
-        self._terms = dict(initial or {})
+        self._terms = {}
+        self._index = {}         # normalised source -> the spelling we kept
         self._losers = {}        # rejected translation -> the one that won
+        self.add((initial or {}).items())
+
+    def _norm(self, source: str) -> str:
+        return source.lower() if len(source) >= self.CASEFOLD_FROM else source
 
     def add(self, pairs) -> None:
         with self._lock:
@@ -233,18 +238,35 @@ class Glossary:
                 source, target = str(source).strip(), str(target).strip()
                 if not source or not target or len(source) > 80:
                     continue
-                winner = self._terms.setdefault(source, target)
+                # "Fixed point" and "fixed point" are one term, not two, or the
+                # glossary would hold both and contradict itself.
+                key = self._norm(source)
+                kept = self._index.setdefault(key, source)
+                winner = self._terms.setdefault(kept, target)
                 if winner != target:
                     self._losers[target] = winner
+
+    # Below this length a term is an acronym — "TIP", "CFG" — where case is the
+    # only thing separating it from an ordinary word, so it must match exactly.
+    CASEFOLD_FROM = 4
 
     def matching(self, text: str) -> list:
         """The terms that actually occur in this chunk, longest first.
 
         Sending the whole glossary would push the real work down the prompt and
         cost tokens on every call; sending what appears is enough to pin it.
+
+        Matching ignores case for anything longer than an acronym. Extraction
+        reports terms as they are named — "Fixed point" — while the body writes
+        them as they are used — "fixed point". On SPA.pdf that mismatch meant
+        the agreed 不动点 was never once injected and the text ended up saying
+        定点 instead.
         """
+        lowered = text.lower()
         with self._lock:
-            hits = [(s, t) for s, t in self._terms.items() if s in text]
+            hits = [(s, t) for s, t in self._terms.items()
+                    if (s.lower() in lowered if len(s) >= self.CASEFOLD_FROM
+                        else s in text)]
         hits.sort(key=lambda p: len(p[0]), reverse=True)
         return hits[:MAX_INJECTED]
 
