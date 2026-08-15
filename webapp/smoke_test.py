@@ -321,6 +321,38 @@ def _context_keys():
     assert context.cache_key("smoke-keys", "2.1 Overview") is None
 
 
+@check("术语表先到先得，冲突改写有护栏")
+def _glossary():
+    from webapp.context import Glossary, apply_fixups
+
+    g = Glossary({"NSA": "NSA"})
+    # An entry translating to itself is the do-not-translate list.
+    assert g.terms()["NSA"] == "NSA"
+
+    g.add([("program slicing", "程序切片"), ("lattice", "格")])
+    # First writer wins, permanently: consistency is the point.
+    g.add([("program slicing", "程序分片")])
+    assert g.terms()["program slicing"] == "程序切片"
+    assert g.fixups() == {"程序分片": "程序切片"}
+    assert apply_fixups("这里用了程序分片。", g.fixups()) == "这里用了程序切片。"
+
+    # Nested renderings must not be rewritten: "切片" -> "程序切片" applied to a
+    # text already saying "程序切片" would yield "程序程序切片".
+    n = Glossary()
+    n.add([("slicing", "程序切片")])
+    n.add([("slicing", "切片")])
+    assert n.fixups() == {}, n.fixups()
+
+    # Malformed entries cost the terms, never the translation that came with
+    # them, and only terms present in the chunk are injected.
+    from webapp.context import _pairs
+    assert _pairs({"terms": [{"source": "a", "target": "b"}, {"oops": 1}, None]}) \
+        == [("a", "b")]
+    assert dict(g.matching("we discuss program slicing here")) == \
+        {"program slicing": "程序切片"}
+    assert g.matching("nothing relevant") == []
+
+
 @check("文档描述按提取所用文本缓存")
 def _profile_reuse():
     from webapp import context

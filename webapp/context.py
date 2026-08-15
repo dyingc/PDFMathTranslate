@@ -142,9 +142,14 @@ def cache_key(job_id: str, text: str):
 
 _PROFILE_PROMPT = (
     "Below are excerpts from a document. Reply with a JSON object with keys "
-    '"title", "field" and "summary". "title" is the document\'s title, "field" '
-    'its academic or technical field, "summary" at most 25 words on what it is '
-    "about. Use the language of the document itself."
+    '"title", "field", "summary" and "terms". "title" is the document\'s '
+    'title, "field" its academic or technical field, "summary" at most 25 '
+    "words on what it is about; use the language of the document itself for "
+    'these three. "terms" is a list of at most 25 objects {"source", '
+    '"target"}: the document\'s key technical terms, proper nouns and '
+    "acronyms, with the translation to use for each in {lang_out}. Give the "
+    "same string as the translation for anything that should keep its "
+    "original form."
 )
 
 
@@ -172,21 +177,103 @@ def describe(tr, excerpt: str, title: str = "") -> dict:
     """One call, or none: a title/field/summary block for every later prompt."""
     if not excerpt:
         return {}
+    prompt = _PROFILE_PROMPT.replace("{lang_out}", tr.lang_out)
     try:
-        content = _ask(tr, [
-            {"role": "user",
-             "content": f"{_PROFILE_PROMPT}\n\n{excerpt}"},
-        ])
-        profile = json.loads(content)
-        if not isinstance(profile, dict):
+        content = _ask(tr, [{"role": "user",
+                             "content": f"{prompt}\n\n{excerpt}"}])
+        data = json.loads(content)
+        if not isinstance(data, dict):
             return {}
     except Exception as exc:      # noqa: BLE001 - context is an optimisation
         logger.warning("document profile failed: %s", exc)
         return {}
-    if title and not profile.get("title"):
-        profile["title"] = title
-    return {k: str(v)[:300] for k, v in profile.items()
-            if k in ("title", "field", "summary") and v}
+    if title and not data.get("title"):
+        data["title"] = title
+    profile = {k: str(v)[:300] for k, v in data.items()
+               if k in ("title", "field", "summary") and v}
+    # Seeding the glossary from the same call is what keeps the early chunks
+    # from each coining their own translation for the document's core terms.
+    terms = {}
+    for source, target in _pairs(data):
+        source, target = str(source).strip(), str(target).strip()
+        if source and target and len(source) <= 80:
+            terms.setdefault(source, target)
+    if terms:
+        profile["terms"] = terms
+    return profile
+
+
+# ---------------------------------------------------------------------------
+# The glossary: named entities and technical terms, agreed once per document.
+
+MAX_INJECTED = 40        # terms per chunk, so the prompt cannot be swamped
+
+
+class Glossary:
+    """Terms and their agreed translations, growing as the document is read.
+
+    An entry whose translation equals its source *is* the do-not-translate
+    list — "NSA" rendered as "NSA". There is no need for a second mechanism:
+    a term that must stay in its original form is just a term that translates
+    to itself.
+
+    First writer wins, permanently. Consistency is the entire point, so a
+    uniformly second-best rendering beats one that is locally optimal and
+    drifts across the document.
+    """
+
+    def __init__(self, initial: dict = None) -> None:
+        self._lock = threading.Lock()
+        self._terms = dict(initial or {})
+        self._losers = {}        # rejected translation -> the one that won
+
+    def add(self, pairs) -> None:
+        with self._lock:
+            for source, target in pairs:
+                source, target = str(source).strip(), str(target).strip()
+                if not source or not target or len(source) > 80:
+                    continue
+                winner = self._terms.setdefault(source, target)
+                if winner != target:
+                    self._losers[target] = winner
+
+    def matching(self, text: str) -> list:
+        """The terms that actually occur in this chunk, longest first.
+
+        Sending the whole glossary would push the real work down the prompt and
+        cost tokens on every call; sending what appears is enough to pin it.
+        """
+        with self._lock:
+            hits = [(s, t) for s, t in self._terms.items() if s in text]
+        hits.sort(key=lambda p: len(p[0]), reverse=True)
+        return hits[:MAX_INJECTED]
+
+    def terms(self) -> dict:
+        with self._lock:
+            return dict(self._terms)
+
+    def fixups(self) -> dict:
+        """Rejected renderings to rewrite, and the ones that replace them.
+
+        Concurrency means the first few chunks leave before any of them has
+        seen the others' terms, so they can each coin a different translation
+        for the same term. The winner is used from then on, but those early
+        translations still carry the rejected wording.
+
+        Pairs where one string contains the other are dropped: rewriting "切片"
+        to "程序切片" inside a text that already says "程序切片" would produce
+        "程序程序切片".
+        """
+        with self._lock:
+            return {lose: win for lose, win in self._losers.items()
+                    if lose and win and lose != win
+                    and lose not in win and win not in lose}
+
+
+def apply_fixups(text: str, fixups: dict) -> str:
+    for lose, win in fixups.items():
+        text = text.replace(lose, win)
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -219,10 +306,17 @@ def _rules(tr) -> str:
         "- A segment may be a heading or a sentence fragment; translate it as "
         "what it is, using the surrounding segments to understand it.\n"
         "- Keep terminology identical throughout the whole document.\n"
+        "- Where a glossary is given, use exactly those translations. An entry "
+        "whose translation equals its source must be left in its original "
+        "form.\n"
         "- Output the translation only, with no commentary.\n\n"
         'Reply with a JSON object {"segments": [{"id": <int>, "text": '
-        "<translation>}]} holding exactly one entry per input segment, with the "
-        "same ids."
+        "<translation>}], \"terms\": [{\"source\": <term>, \"target\": "
+        "<translation>}]} . \"segments\" holds exactly one entry per input "
+        "segment, with the same ids. \"terms\" holds the technical terms, "
+        "proper nouns and acronyms you translated that are NOT already in the "
+        "glossary, spelled exactly as in the source; give the same string as "
+        "the translation for anything that should stay in its original form."
     )
 
 
@@ -233,10 +327,12 @@ def _preamble(tr, profile: dict) -> str:
     only matches from the first token — so everything constant has to come
     first and the per-chunk text last.
     """
-    block = ""
-    if profile:
-        lines = [f"{k.capitalize()}: {v}" for k, v in profile.items()]
-        block = "This document:\n" + "\n".join(lines) + "\n\n"
+    # Only the description belongs here. The glossary is deliberately left out:
+    # it grows while the job runs, and a preamble that changes would defeat the
+    # prefix cache it sits in front of.
+    lines = [f"{k.capitalize()}: {profile[k]}"
+             for k in ("title", "field", "summary") if profile.get(k)]
+    block = "This document:\n" + "\n".join(lines) + "\n\n" if lines else ""
     return f"{_rules(tr)}\n\n{block}"
 
 
@@ -250,7 +346,22 @@ def _ask(tr, messages: list) -> str:
     return response.choices[0].message.content
 
 
-def _translate_chunk(tr, preamble: str, chunk: list) -> dict:
+def _pairs(data) -> list:
+    """(source, target) pairs from a reply's "terms", ignoring any malformed.
+
+    The glossary is an optimisation; a model that gets its shape wrong must
+    cost us the terms, never the translations that came with them.
+    """
+    out = []
+    for item in data.get("terms") or ():
+        try:
+            out.append((item["source"], item["target"]))
+        except (TypeError, KeyError):
+            continue
+    return out
+
+
+def _translate_chunk(tr, preamble: str, chunk: list, glossary=None) -> dict:
     """{index: translation} for one chunk, or {} if the reply cannot be trusted.
 
     Ids make a mismatch loud and local: a model that merges two segments returns
@@ -258,9 +369,19 @@ def _translate_chunk(tr, preamble: str, chunk: list) -> dict:
     silently shifting every later paragraph onto the wrong piece of the page.
     """
     payload = {"segments": [{"id": i, "text": text} for i, text in chunk]}
+    body = json.dumps(payload, ensure_ascii=False)
+
+    # The glossary goes here, not in the preamble: it changes from chunk to
+    # chunk, and anything variable placed before the constant part would stop
+    # the prefix cache matching for the whole job.
+    known = glossary.matching(" ".join(t for _, t in chunk)) if glossary else []
+    if known:
+        listing = "\n".join(f"{s} -> {t}" for s, t in known)
+        body = f"Glossary already agreed for this document:\n{listing}\n\n{body}"
+
     messages = [
         {"role": "system", "content": preamble},
-        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        {"role": "user", "content": body},
     ]
     want = {i for i, _ in chunk}
     for attempt in range(2):
@@ -276,6 +397,8 @@ def _translate_chunk(tr, preamble: str, chunk: list) -> dict:
                            "missing %s, extra %s", attempt + 1,
                            sorted(want - set(got)), sorted(set(got) - want))
             continue
+        if glossary:
+            glossary.add(_pairs(data))
         return got
     return {}
 
@@ -306,21 +429,25 @@ def prepare(tr, paragraphs: list, profile: dict = None, progress=None,
 
     if not unique:
         return 0, 0
-    preamble = _preamble(tr, profile or {})
+    profile = profile or {}
+    preamble = _preamble(tr, profile)
+    glossary = Glossary(profile.get("terms"))
 
     groups = chunks(unique)
     done = finished = 0
     lock = threading.Lock()
+    written = []
 
     def run(group):
         nonlocal done, finished
         texts = dict(group)
-        result = _translate_chunk(tr, preamble, group)
+        result = _translate_chunk(tr, preamble, group, glossary)
         with lock:
             for index, translation in result.items():
                 key = cache_key(tr.job_id, texts[index])
                 if key is not None:
                     tr.cache.set(key, translation)
+                    written.append((key, translation))
                 done += 1
             finished += 1
             if progress:
@@ -330,12 +457,29 @@ def prepare(tr, paragraphs: list, profile: dict = None, progress=None,
     # 33-call job that fanned out immediately, only 23% of input tokens were
     # cached: the whole first wave of parallel calls left before the preamble
     # had been seen once, and a cache miss costs fifty times a hit. This is not
-    # a wasted probe — it is real work, just not concurrent.
+    # a wasted probe — it is real work, just not concurrent. It also gives the
+    # glossary a first draft before anything runs in parallel.
     run(groups[0])
     # The rest are independent by construction, each carrying its own context,
     # so they fan out over the same thread budget the layout pass would use.
     with ThreadPoolExecutor(max_workers=max(1, threads)) as pool:
         list(pool.map(run, groups[1:]))
+
+    # Chunks are cached as they arrive, so a crash never throws away work that
+    # was already paid for. The rewrite therefore has to happen against the
+    # cache rather than before it — entries replace on conflict, so setting the
+    # corrected text again is enough.
+    fixups = glossary.fixups()
+    if fixups:
+        repaired = 0
+        for key, translation in written:
+            fixed = apply_fixups(translation, fixups)
+            if fixed != translation:
+                tr.cache.set(key, fixed)
+                repaired += 1
+        logger.info("glossary: %d conflicting renderings rewritten in %d "
+                    "paragraphs", len(fixups), repaired)
+    profile["terms"] = glossary.terms()
     return done, len(unique)
 
 

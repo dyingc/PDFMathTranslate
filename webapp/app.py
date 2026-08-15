@@ -400,8 +400,13 @@ def _with_context(job_id: str, src: Path, api_key: str, model: str,
     done, total = context.prepare(tr, paragraphs, profile,
                                   progress=lambda f: report(1, f),
                                   threads=LLM_THREADS)
-    logger.info("job %s: %d/%d paragraphs translated with context",
-                job_id, done, total)
+    # prepare() leaves the glossary it grew in `profile`; storing it means a
+    # later run of the same document starts with the terminology settled
+    # instead of rediscovering it.
+    context.save_profile(key, profile)
+    logger.info("job %s: %d/%d paragraphs translated with context, "
+                "%d terms in glossary", job_id, done, total,
+                len(profile.get("terms") or ()))
     return field
 
 
