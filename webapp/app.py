@@ -220,10 +220,17 @@ app = FastAPI(title="PDF Translator (DeepSeek)")
 
 @app.middleware("http")
 async def _no_cache(request, call_next):
-    """The single-page UI is edited in place; never let a browser pin an old copy."""
+    """The UI is edited in place; never let a browser pin an old copy.
+
+    Everything, not just the HTML. Restricting this to text/html left i18n.js
+    with no Cache-Control at all, so the browser cached it heuristically and
+    stopped revalidating: the page was current, its translations were not, and
+    a newly added message rendered as its own key. The job list had already
+    been served stale once for the same reason. There is nothing here worth
+    caching — the API responses least of all.
+    """
     resp = await call_next(request)
-    if resp.headers.get("content-type", "").startswith("text/html"):
-        resp.headers["Cache-Control"] = "no-store"
+    resp.headers["Cache-Control"] = "no-store"
     return resp
 
 

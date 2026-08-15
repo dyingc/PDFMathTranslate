@@ -412,6 +412,22 @@ def _glossary():
         assert m.matching(text), f"{text!r} 没有匹配到术语"
 
 
+@check("静态资源不会被浏览器缓存住")
+def _no_stale_assets():
+    """i18n.js once had no Cache-Control while index.html had no-store, so the
+    page was current and its translations were not: a newly added message
+    rendered as its own key."""
+    from fastapi.testclient import TestClient
+    import webapp.app as app
+
+    with TestClient(app.app) as client:
+        for path in ("/", "/i18n.js", "/api/config"):
+            resp = client.get(path)
+            assert resp.status_code == 200, (path, resp.status_code)
+            assert resp.headers.get("cache-control") == "no-store", \
+                f"{path} 缺少 no-store: {resp.headers.get('cache-control')!r}"
+
+
 @check("已是目标语言的文档会被认出来")
 def _already_translated():
     """Uploading a previous translation instead of the original costs double.
