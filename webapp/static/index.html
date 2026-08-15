@@ -329,6 +329,16 @@ $('go').onclick = async () => {
   $('go').disabled = true;
   showMsg('msg', 'uploading', '', false);
   let r = await fetch('/api/translate', { method: 'POST', body: fd });
+  // Uploading a previous translation instead of the original is easy to do and
+  // costs double, so it is worth one question.
+  if (r.status === 409 && (await peek(r)) === 'err_already_translated') {
+    const d = (await r.clone().json().catch(() => ({}))).detail || {};
+    if (!confirm(t('already_warn', { pct: d.pct }))) {
+      $('go').disabled = false; showMsg('msg', null); return;
+    }
+    fd.append('confirm_language', '1');
+    r = await fetch('/api/translate', { method: 'POST', body: fd });
+  }
   // A scanned PDF needs an explicit decision before we spend anything on it.
   if (r.status === 409 && (await peek(r)) === 'err_scanned') {
     if (!confirm(t('scanned_warn'))) { $('go').disabled = false; showMsg('msg', null); return; }

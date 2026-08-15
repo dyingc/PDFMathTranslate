@@ -38,6 +38,7 @@ from webapp import context  # noqa: E402
 from webapp.pricing import METER, TABLE  # noqa: E402
 from webapp.deghost import deghost  # noqa: E402
 from webapp.links import restore_links  # noqa: E402
+from webapp.langcheck import already_translated  # noqa: E402
 from webapp.scanned import dual_page_for, is_scanned, whiteout  # noqa: E402
 from webapp.toc import without_toc  # noqa: E402
 from webapp.verbatim import (  # noqa: E402
@@ -518,6 +519,7 @@ async def start_translate(
     output: str = Form("both"),
     effort: str = Form(DEFAULT_EFFORT),
     confirm_scanned: str = Form(""),
+    confirm_language: str = Form(""),
     sid: Optional[str] = Cookie(None),
 ):
     api_key = _require_key(sid)
@@ -535,6 +537,16 @@ async def start_translate(
     d.mkdir(parents=True)
     src = d / os.path.basename(file.filename)
     src.write_bytes(await file.read())
+
+    # Uploading last week's output instead of the original costs roughly double
+    # and half of it is spent translating the target language into itself.
+    done = already_translated(src, lang_out)
+    if done["hit"] and not confirm_language:
+        shutil.rmtree(d, ignore_errors=True)
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "err_already_translated",
+                    "pct": round(done["ratio"] * 100)})
 
     # A scan needs the user's decision before anything is spent on it.
     scan = is_scanned(src)

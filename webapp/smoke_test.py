@@ -399,6 +399,46 @@ def _glossary():
         assert m.matching(text), f"{text!r} 没有匹配到术语"
 
 
+@check("已是目标语言的文档会被认出来")
+def _already_translated():
+    """Uploading a previous translation instead of the original costs double.
+    Counted by page, not by character: Chinese is far denser than English, so a
+    half-Chinese dual document measures 19% by character — under any sensible
+    bar — and 44% by page, which is what it actually is."""
+    import pymupdf
+    from webapp.langcheck import already_translated
+
+    english = "The analysis is sound and terminates on every input program. " * 3
+    chinese = "该分析是可靠的，并且在每个输入程序上都会终止。" * 4
+
+    import tempfile
+    folder = Path(tempfile.mkdtemp(prefix="smoke-lang-"))
+
+    def build(name, pages):
+        doc = pymupdf.open()
+        for text, font in pages:
+            page = doc.new_page()
+            page.insert_textbox(pymupdf.Rect(50, 50, 550, 700), text,
+                                fontname=font, fontsize=11)
+        path = folder / name
+        doc.save(str(path))
+        doc.close()
+        return path
+
+    original = build("original.pdf", [(english, "helv")] * 4)
+    dual = build("dual.pdf", [(english, "helv"), (chinese, "china-s")] * 2)
+    try:
+        assert not already_translated(original, "zh")["hit"], "原文被误判"
+        got = already_translated(dual, "zh")
+        assert got["hit"], f"对照版没被认出，占比 {got['ratio']:.0%}"
+        # Latin-script targets share an alphabet, so the check stays quiet
+        # rather than guessing.
+        assert not already_translated(dual, "fr")["hit"]
+    finally:
+        import shutil
+        shutil.rmtree(folder, ignore_errors=True)
+
+
 @check("术语必须在摘录里露过面才被采纳")
 def _grounded_terms():
     """The frequency list names bare words with no context. A translation
