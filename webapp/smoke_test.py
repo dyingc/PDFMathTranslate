@@ -379,6 +379,17 @@ def _glossary():
     assert Glossary._stem("analysis") == "analysis"
     assert Glossary._stem("Control flow graphs") == "control flow graph"
 
+    # 71% of the terms extracted from a real book are more than one word, and
+    # English writes a compound with a hyphen in the adjective position and a
+    # space in the noun position. Either spelling has to find the other.
+    m = Glossary({"Context sensitivity": "上下文敏感",
+                  "fixed-point algorithms": "不动点算法"})
+    for text in ("a context-sensitive analysis",
+                 "the context sensitivity of it",
+                 "using fixed point algorithms",
+                 "using fixed-point algorithms"):
+        assert m.matching(text), f"{text!r} 没有匹配到术语"
+
 
 @check("文档描述按提取所用文本缓存")
 def _profile_reuse():

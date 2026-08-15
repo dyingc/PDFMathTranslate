@@ -254,9 +254,20 @@ class Glossary:
     _ENDINGS = ("ness", "ions", "ing", "ion", "ity", "ed", "es", "ly", "s")
     _STEM_MIN = 4
 
+    @staticmethod
+    def _flat(text: str) -> str:
+        """Hyphens and whitespace made interchangeable.
+
+        71% of the terms extracted from a real book are more than one word, and
+        English writes the same compound both ways depending on where it sits:
+        "context sensitivity" in the noun position, "context-sensitive" in the
+        adjective one. Without this, neither spelling finds the other.
+        """
+        return " ".join(text.replace("-", " ").split())
+
     @classmethod
     def _stem(cls, source: str) -> str:
-        head, _, last = source.lower().rpartition(" ")
+        head, _, last = cls._flat(source).lower().rpartition(" ")
         for ending in cls._ENDINGS:
             if not last.endswith(ending):
                 continue
@@ -290,7 +301,7 @@ class Glossary:
         to 健全. Consistency for that term fell from 83% without a glossary to
         64% with one: the glossary itself split the document in two.
         """
-        lowered = text.lower()
+        lowered = self._flat(text).lower()
         with self._lock:
             hits = [(s, t) for s, t in self._terms.items()
                     if (self._stem(s) in lowered if len(s) >= self.CASEFOLD_FROM
