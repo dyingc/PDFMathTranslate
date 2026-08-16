@@ -157,7 +157,14 @@ _PROFILE_PROMPT = (
     "it is used; a translation guessed from a bare word would be wrong for the "
     "whole document. The frequency list is for judging which of those terms "
     'matter and for collecting their other spellings into "forms" — a spelling '
-    "needs no context, only recognition."
+    "needs no context, only recognition.\n\n"
+    "A term belongs here only when several renderings would all be correct and "
+    "something has to choose one, so that the document does not drift between "
+    "them: multi-word technical terms, proper nouns, acronyms, names of "
+    "systems and benchmarks. Do NOT propose an ordinary word on its own — "
+    '"fixed", "point", "value", "block" — even when it is frequent. Context '
+    "already settles what such a word means here, and fixing one rendering for "
+    "it corrupts every compound it appears in."
 )
 
 
@@ -371,61 +378,12 @@ class Glossary:
                 key = self._flat(source)
                 key = key.lower() if len(key) >= self.CASEFOLD_FROM else key
                 term = self._forms.get(key, source)
-                clash = self._contradicts(term, target)
-                if clash:
-                    logger.info("glossary: %r -> %r contradicts %r, dropped",
-                                term, target, clash)
-                    continue
                 winner = self._terms.setdefault(term, target)
                 if winner != target:
                     self._losers[target] = winner
                 self._learn(term, source)
                 for form in forms or ():
                     self._learn(term, form)
-
-    def _contradicts(self, source: str, target: str):
-        """A shorter term this entry contains but does not honour, if any.
-
-        A glossary can disagree with itself across lengths, and it did: NSA's
-        held both `token -> token` and `hierarchical token modeling ->
-        层次化标记建模`. The longer entry silently overrode the shorter one
-        wherever it applied, and 标记 spread from it through the abstract.
-
-        A longer term is a phrase built from shorter ones, so its translation
-        should keep something of theirs. When it keeps nothing at all, the
-        longer entry is the one to drop: the shorter term is the more general
-        decision and the one already in use elsewhere.
-
-        Both tests are deliberately weak, because a strict one was tried and
-        was wrong far more often than right. It has to be a whole word —
-        "attention" is not a part of "FlashAttention", "native" is not a part
-        of "alternative" — and sharing any character is enough, so that
-        `sparse -> 稀疏的` does not condemn `稀疏注意力策略` over a 的. What
-        survives is the case that matters: renderings with nothing whatsoever
-        in common, like `token -> token` against `层次化标记建模`.
-        """
-        # An entry that translates to itself is a decision to leave something
-        # alone, not a rendering that can disagree with anything. A Chinese
-        # name never shares a character with its Latin original, so the test
-        # below would condemn every one of them: `Henry Gordon Rice` kept as
-        # written was rejected for "contradicting" `Rice -> 赖斯`, and
-        # `Full Attention` as a baseline's name for contradicting
-        # `attention -> 注意力`. Both were right as they stood.
-        if target == source:
-            return None
-        words = self._flat(source).lower().split()
-        for other, rendering in self._terms.items():
-            small = self._flat(other).lower()
-            parts = small.split()
-            n = len(parts)
-            if small == self._flat(source).lower() or len(small) < 3:
-                continue
-            if not any(words[i:i + n] == parts for i in range(len(words) - n + 1)):
-                continue
-            if set(rendering) & set(target):
-                continue
-            return f"{other} -> {rendering}"
-        return None
 
     # Below this length a term is an acronym — "TIP", "CFG" — where case is the
     # only thing separating it from an ordinary word, so it must match exactly.
