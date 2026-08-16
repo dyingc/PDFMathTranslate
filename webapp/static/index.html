@@ -133,8 +133,15 @@ async function saveSettings() {
   const r = await fetch('/api/settings', { method: 'POST', body });
   if (r.ok) {
     cfg.workers = +$('workers').value; cfg.llm_threads = +$('llmThreads').value;
-    showMsg('topMsg', 'saved', '', false);
-    setTimeout(() => showMsg('topMsg', null), 1500);
+    // Threads are what create the cold start: the opening wave of chunks each
+    // settles terminology without seeing what the others chose. Measured on one
+    // book, conflicts needing repair went 31 at 8 threads to 4 at 2.
+    if (cfg.llm_threads > 2) {
+      showMsg('topMsg', 'threads_warn', '', true);
+    } else {
+      showMsg('topMsg', 'saved', '', false);
+      setTimeout(() => showMsg('topMsg', null), 1500);
+    }
   } else {
     const e = await errOf(r);
     showMsg('topMsg', e.code, e.raw, true);

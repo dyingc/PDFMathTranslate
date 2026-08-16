@@ -163,6 +163,11 @@ CONTEXT = os.environ.get("WEBAPP_CONTEXT", "1").strip() not in ("0", "false", "n
 CHUNK_CHARS = _settings_int("chunk_chars", "WEBAPP_CHUNK_CHARS",
                             context.CHUNK_CHARS)
 
+# Above this many threads, a job first spends one call describing the document
+# and agreeing its terminology, so the opening wave of chunks does not each
+# invent its own. At or below it, that wave is too small to be worth a call.
+SEED_ABOVE_THREADS = 2
+
 # The interface language is a saved preference like any other; it is what the
 # very first screen (API key entry) renders in, so it must be known before the
 # UI draws anything.
@@ -391,23 +396,34 @@ def _with_context(job_id: str, src: Path, api_key: str, model: str,
     context.use_keys(job_id, paragraphs)
     STORE.update(job_id, stage="Translating in context")
 
-    # The description is only for the prompt now; the cache key is the
-    # document itself, so this no longer has to happen before any lookup.
-    budget, want = context.sizing(paragraphs)
-    excerpt = context.sample(paragraphs, budget)
-    key = context.profile_key(excerpt)
-    profile = context.load_profile(key)
-    if profile is None:
-        probe = MeteredDeepseekTranslator(
-            lang_in, lang_out, model,
-            envs=_envs(api_key, model, effort, job_id, doc=doc_key))
-        profile = context.describe(probe, excerpt, context.title_of(src),
-                                   words=context.vocabulary(paragraphs),
-                                   terms=want)
-        context.save_profile(key, profile)
-        logger.info("job %s: document profile: %s", job_id, profile or "none")
-    else:
-        logger.info("job %s: reusing document profile: %s", job_id, profile)
+    # Describing the document up front exists to survive a cold start: with
+    # many chunks in flight at once, none of the first wave has seen the terms
+    # any of the others agreed, so a glossary settled in advance is what stops
+    # them each coining their own. That is a problem proportional to
+    # concurrency, and it disappears with it — conflicts needing repair went
+    # 31 -> 15 -> 4 as threads went 8 -> 2 -> 2 with smaller chunks. Two runs
+    # whose description silently failed matched the best results ever measured
+    # on this book, which is the same statement from the other side.
+    #
+    # So it is spent only where it pays. Below this, the opening pair of chunks
+    # is the whole cold start and the glossary grown chunk by chunk covers it.
+    key, profile = "", None
+    if LLM_THREADS > SEED_ABOVE_THREADS:
+        budget, want = context.sizing(paragraphs)
+        excerpt = context.sample(paragraphs, budget)
+        key = context.profile_key(excerpt)
+        profile = context.load_profile(key)
+        if profile is None:
+            probe = MeteredDeepseekTranslator(
+                lang_in, lang_out, model,
+                envs=_envs(api_key, model, effort, job_id, doc=doc_key))
+            profile = context.describe(probe, excerpt, context.title_of(src),
+                                       words=context.vocabulary(paragraphs),
+                                       terms=want)
+            context.save_profile(key, profile)
+            logger.info("job %s: document profile: %s", job_id, profile or "none")
+        else:
+            logger.info("job %s: reusing document profile: %s", job_id, profile)
 
     tr = MeteredDeepseekTranslator(lang_in, lang_out, model,
                                    envs=_envs(api_key, model, effort, job_id,
@@ -417,8 +433,9 @@ def _with_context(job_id: str, src: Path, api_key: str, model: str,
                                   threads=LLM_THREADS, limit=CHUNK_CHARS)
     # prepare() leaves the glossary it grew in `profile`; storing it means a
     # later run of the same document starts with the terminology settled
-    # instead of rediscovering it.
-    context.save_profile(key, profile)
+    # instead of rediscovering it. Nothing to store when nothing was asked.
+    if key:
+        context.save_profile(key, profile)
     logger.info("job %s: %d/%d paragraphs translated with context, "
                 "%d terms in glossary", job_id, done, total,
                 len(profile.get("terms") or ()))

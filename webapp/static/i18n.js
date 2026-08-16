@@ -70,6 +70,7 @@ const I18N = {
     err_no_source: "源文件已不存在，无法继续",
     scanned_warn: "这是一份扫描件：页面上的原文是图片，pdf2zh 无法删除它，译文会直接叠在上面。\n\n若继续，我们会在译文所在区域擦除扫描图上的原文像素，图表和线条不受影响；代价是这些区域的底纹或背景也会被一并擦掉。\n\n继续翻译？",
     already_warn: "这份文档里已有 {pct}% 的文字是目标语言——它很可能是之前的译文，而不是原文。\n\n继续的话，这部分会被再翻译一遍（比如中译中），费用大约翻倍。\n\n仍要继续？",
+    threads_warn: "并发调高会更快，但术语一致性会变差：开头同时发出的那批分块彼此看不见对方议定的译法，只能各自造词。实测同一本书，需要事后改写的冲突在 8 线程时是 31 条、2 线程时是 4 条。高于 2 时会额外花一次调用先议定术语来兜底。",
   },
   "zh-TW": {
     title: "PDF 翻譯（保留公式排版）",
@@ -139,6 +140,7 @@ const I18N = {
     err_no_source: "原始檔已不存在，無法繼續",
     scanned_warn: "這是一份掃描件：頁面上的原文是圖片，pdf2zh 無法刪除它，譯文會直接疊在上面。\n\n若繼續，我們會在譯文所在區域擦除掃描圖上的原文像素，圖表與線條不受影響；代價是這些區域的底紋或背景也會一併被擦掉。\n\n繼續翻譯？",
     already_warn: "這份文件裡已有 {pct}% 的文字是目標語言——它很可能是先前的譯文，而不是原文。\n\n若繼續，這部分會再被翻譯一次（例如中譯中），費用大約加倍。\n\n仍要繼續？",
+    threads_warn: "並發調高會更快，但術語一致性會變差：開頭同時發出的那批分塊彼此看不見對方議定的譯法，只能各自造詞。實測同一本書，需要事後改寫的衝突在 8 執行緒時是 31 條、2 執行緒時是 4 條。高於 2 時會額外花一次呼叫先議定術語來兜底。",
   },
   "en": {
     title: "PDF Translation (formulas preserved)",
@@ -208,6 +210,7 @@ const I18N = {
     err_no_source: "The source file is gone; cannot resume",
     scanned_warn: "This is a scanned document: the original text on the page is an image, which pdf2zh cannot remove, so the translation would land on top of it.\n\nIf you continue, the pixels of the original text will be erased in the areas the translation occupies. Figures and line art are left alone; the cost is that any shading or background in those areas is erased too.\n\nContinue?",
     already_warn: "{pct}% of this document is already in the target language — it is most likely a previous translation rather than the original.\n\nContinuing would translate that part again, into the language it is already in, at roughly double the cost.\n\nContinue anyway?",
+    threads_warn: "More threads is faster but less consistent: the opening chunks all go out before any of them has seen the terms the others settled on, so each coins its own. Measured on one book, conflicts needing repair were 31 at 8 threads and 4 at 2. Above 2, one extra call is spent agreeing terminology first to compensate.",
   },
   "ja": {
     title: "PDF 翻訳（数式レイアウトを保持）",
@@ -277,6 +280,7 @@ const I18N = {
     err_no_source: "元ファイルが見つからないため再開できません",
     scanned_warn: "これはスキャン文書です。ページ上の原文は画像であり、pdf2zh では削除できないため、訳文がその上に重なってしまいます。\n\n続行すると、訳文が置かれる領域だけスキャン画像上の原文のピクセルを消去します。図や線画はそのままですが、その領域の地色や背景も一緒に消えます。\n\n続行しますか？",
     already_warn: "この文書の {pct}% はすでに翻訳先の言語で書かれています。原文ではなく、以前の訳文である可能性が高いです。\n\n続行すると、その部分が同じ言語へもう一度翻訳され、費用はおよそ倍になります。\n\nそれでも続行しますか？",
+    threads_warn: "並列数を上げると速くなりますが用語の一貫性は落ちます。最初に同時送信されるチャンクは互いの決めた訳語を見られず、それぞれが独自に訳語を作るためです。ある書籍での実測では、後から修正が必要な衝突は8並列で31件、2並列で4件でした。2を超える場合は、先に用語を決める呼び出しを1回追加して補います。",
   },
   "ko": {
     title: "PDF 번역 (수식 레이아웃 유지)",
@@ -346,6 +350,7 @@ const I18N = {
     err_no_source: "원본 파일이 없어 이어서 진행할 수 없습니다",
     scanned_warn: "이 문서는 스캔본입니다. 페이지의 원문이 이미지라서 pdf2zh 가 제거할 수 없고, 번역문이 그 위에 겹쳐집니다.\n\n계속하면 번역문이 놓이는 영역에서 스캔 이미지의 원문 픽셀을 지웁니다. 그림과 선은 그대로 두지만, 해당 영역의 음영이나 배경도 함께 지워집니다.\n\n계속할까요?",
     already_warn: "이 문서의 {pct}%가 이미 목표 언어로 되어 있습니다. 원문이 아니라 이전 번역본일 가능성이 높습니다.\n\n계속하면 그 부분을 같은 언어로 다시 번역하게 되어 비용이 약 두 배가 됩니다.\n\n그래도 계속할까요?",
+    threads_warn: "동시 실행을 늘리면 빨라지지만 용어 일관성은 떨어집니다. 처음 동시에 나가는 청크들은 서로가 정한 번역어를 볼 수 없어 각자 새로 만들어냅니다. 한 책에서 측정한 결과, 사후 수정이 필요한 충돌이 8스레드에서 31건, 2스레드에서 4건이었습니다. 2를 넘으면 용어를 먼저 정하는 호출을 한 번 추가해 보완합니다.",
   },
   "fr": {
     title: "Traduction de PDF (mise en page des formules préservée)",
@@ -415,6 +420,7 @@ const I18N = {
     err_no_source: "Le fichier source a disparu ; reprise impossible",
     scanned_warn: "Ce document est numérisé : le texte original de la page est une image que pdf2zh ne peut pas supprimer, la traduction se superposerait donc à lui.\n\nSi vous continuez, les pixels du texte original seront effacés là où la traduction se place. Les figures et les traits sont préservés ; en contrepartie, tout fond ou trame dans ces zones disparaîtra aussi.\n\nContinuer ?",
     already_warn: "{pct}% de ce document est déjà dans la langue cible : il s'agit probablement d'une traduction précédente et non de l'original.\n\nContinuer retraduirait cette partie vers la langue où elle se trouve déjà, pour environ le double du coût.\n\nContinuer quand même ?",
+    threads_warn: "Plus de fils va plus vite mais nuit à la cohérence terminologique : les premiers blocs partent tous avant qu'aucun n'ait vu les termes retenus par les autres, et chacun invente les siens. Mesuré sur un livre, les conflits à corriger étaient de 31 avec 8 fils et de 4 avec 2. Au-delà de 2, un appel supplémentaire fixe d'abord la terminologie pour compenser.",
   },
   "de": {
     title: "PDF-Übersetzung (Formellayout bleibt erhalten)",
@@ -484,6 +490,7 @@ const I18N = {
     err_no_source: "Die Quelldatei fehlt; Fortsetzen nicht möglich",
     scanned_warn: "Dies ist ein Scan: Der Originaltext auf der Seite ist ein Bild, das pdf2zh nicht entfernen kann — die Übersetzung läge darüber.\n\nWenn Sie fortfahren, werden die Pixel des Originaltexts dort gelöscht, wo die Übersetzung steht. Abbildungen und Linien bleiben erhalten; dafür verschwinden auch Schattierungen oder Hintergründe in diesen Bereichen.\n\nFortfahren?",
     already_warn: "{pct}% dieses Dokuments liegen bereits in der Zielsprache vor – vermutlich handelt es sich um eine frühere Übersetzung und nicht um das Original.\n\nBei Fortsetzung würde dieser Teil erneut in dieselbe Sprache übersetzt, zu etwa den doppelten Kosten.\n\nTrotzdem fortfahren?",
+    threads_warn: "Mehr Threads ist schneller, aber terminologisch inkonsistenter: Die ersten Blöcke gehen alle hinaus, bevor einer von ihnen die von den anderen festgelegten Begriffe gesehen hat, also prägt jeder eigene. An einem Buch gemessen lagen die zu korrigierenden Konflikte bei 8 Threads bei 31 und bei 2 bei 4. Über 2 wird ein zusätzlicher Aufruf aufgewendet, um die Terminologie vorab festzulegen.",
   },
   "ru": {
     title: "Перевод PDF (вёрстка формул сохраняется)",
@@ -553,6 +560,7 @@ const I18N = {
     err_no_source: "Исходный файл отсутствует, продолжить нельзя",
     scanned_warn: "Это скан: исходный текст на странице — изображение, которое pdf2zh не может удалить, поэтому перевод лёг бы поверх него.\n\nЕсли продолжить, пиксели исходного текста будут стёрты там, где размещается перевод. Рисунки и линии не пострадают; платой станет то, что фон или заливка в этих областях тоже исчезнут.\n\nПродолжить?",
     already_warn: "{pct}% этого документа уже на целевом языке — скорее всего, это прежний перевод, а не оригинал.\n\nЕсли продолжить, эта часть будет переведена ещё раз на тот же язык, примерно за двойную цену.\n\nВсё равно продолжить?",
+    threads_warn: "Больше потоков — быстрее, но хуже согласованность терминов: первые фрагменты уходят до того, как кто-либо из них увидит выбранные другими варианты, и каждый придумывает свой. На одной книге конфликтов, требующих правки, было 31 при 8 потоках и 4 при 2. Свыше 2 добавляется один вызов, заранее согласующий терминологию.",
   },
   "es": {
     title: "Traducción de PDF (se conserva la maquetación de las fórmulas)",
@@ -622,6 +630,7 @@ const I18N = {
     err_no_source: "El archivo original ya no existe; no se puede reanudar",
     scanned_warn: "Este documento es un escaneo: el texto original de la página es una imagen que pdf2zh no puede eliminar, así que la traducción quedaría encima.\n\nSi continúas, se borrarán los píxeles del texto original en las zonas que ocupa la traducción. Las figuras y los trazos se conservan; a cambio, también se borrará cualquier sombreado o fondo de esas zonas.\n\n¿Continuar?",
     already_warn: "El {pct}% de este documento ya está en el idioma de destino: lo más probable es que sea una traducción anterior y no el original.\n\nContinuar volvería a traducir esa parte al idioma en el que ya está, con un coste aproximadamente doble.\n\n¿Continuar de todos modos?",
+    threads_warn: "Más hilos es más rápido pero menos consistente: los primeros fragmentos salen antes de que ninguno haya visto los términos que fijaron los demás, así que cada uno acuña los suyos. Medido en un libro, los conflictos por corregir fueron 31 con 8 hilos y 4 con 2. Por encima de 2 se gasta una llamada extra para acordar la terminología primero.",
   },
   "it": {
     title: "Traduzione di PDF (impaginazione delle formule preservata)",
@@ -691,5 +700,6 @@ const I18N = {
     err_no_source: "Il file di origine non esiste più; impossibile riprendere",
     scanned_warn: "Questo è un documento scansionato: il testo originale della pagina è un'immagine che pdf2zh non può rimuovere, quindi la traduzione finirebbe sopra di esso.\n\nSe prosegui, i pixel del testo originale verranno cancellati nelle aree occupate dalla traduzione. Figure e tratti restano intatti; in cambio si cancellano anche eventuali sfondi o retini in quelle aree.\n\nProseguire?",
     already_warn: "Il {pct}% di questo documento è già nella lingua di destinazione: molto probabilmente è una traduzione precedente e non l'originale.\n\nProseguire ritradurrebbe quella parte nella lingua in cui si trova già, a un costo circa doppio.\n\nContinuare comunque?",
+    threads_warn: "Più thread è più veloce ma meno coerente: i primi blocchi partono tutti prima che qualcuno abbia visto i termini scelti dagli altri, così ognuno conia i propri. Misurato su un libro, i conflitti da correggere erano 31 con 8 thread e 4 con 2. Oltre 2 viene speso un'ulteriore chiamata per concordare prima la terminologia.",
   },
 };

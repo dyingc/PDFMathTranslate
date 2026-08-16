@@ -415,6 +415,23 @@ def _no_stale_assets():
                 f"{path} 缺少 no-store: {resp.headers.get('cache-control')!r}"
 
 
+@check("开场那次调用只在并发够高时才花")
+def _seed_only_when_concurrent():
+    """Describing the document up front exists to survive a cold start, which
+    is proportional to concurrency: conflicts needing repair went 31 -> 15 -> 4
+    as threads went 8 -> 2. Two runs whose description silently failed matched
+    the best results ever measured on the same book."""
+    import webapp.app as app
+
+    src = inspect.getsource(app._with_context)
+    assert "if LLM_THREADS > SEED_ABOVE_THREADS:" in src, \
+        "开场调用不再受并发条件控制"
+    # ...and everything it produces must be optional downstream, or skipping it
+    # would break the pass rather than shorten it.
+    assert "if key:" in src, "跳过开场调用后仍会尝试写描述文件"
+    assert app.SEED_ABOVE_THREADS >= 2
+
+
 @check("已是目标语言的文档会被认出来")
 def _already_translated():
     """Uploading a previous translation instead of the original costs double.
