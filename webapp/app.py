@@ -413,23 +413,34 @@ def _with_context(job_id: str, src: Path, api_key: str, model: str,
     #
     # So it is spent only where it pays. Below this, the opening pair of chunks
     # is the whole cold start and the glossary grown chunk by chunk covers it.
-    key, profile = "", None
-    if LLM_THREADS > SEED_ABOVE_THREADS:
+    probe = MeteredDeepseekTranslator(
+        lang_in, lang_out, model,
+        envs=_envs(api_key, model, effort, job_id, doc=doc_key))
+
+    # Two facts about the document, always. They cost one small call, they are
+    # cached against the document's own text, and they ride in front of every
+    # prompt this job sends — chunks and single paragraphs alike.
+    profile = context.load_profile(doc_key)
+    if profile is None:
+        profile = context.brief(probe, context.opening(paragraphs))
+        context.save_profile(doc_key, profile)
+        logger.info("job %s: document brief: %s", job_id, profile or "none")
+    else:
+        logger.info("job %s: reusing document brief: %s", job_id, profile)
+    # Registered before anything is translated, so even a job whose context
+    # pass fails outright still carries the two facts into every paragraph.
+    context.use_brief(job_id, profile)
+
+    # The larger extraction — terms and their spellings — is cold-start
+    # insurance, so it is bought only when concurrency creates a cold start.
+    if LLM_THREADS > SEED_ABOVE_THREADS and not profile.get("terms"):
         budget, want = context.sizing(paragraphs)
         excerpt = context.sample(paragraphs, budget)
-        key = context.profile_key(excerpt)
-        profile = context.load_profile(key)
-        if profile is None:
-            probe = MeteredDeepseekTranslator(
-                lang_in, lang_out, model,
-                envs=_envs(api_key, model, effort, job_id, doc=doc_key))
-            profile = context.describe(probe, excerpt, context.title_of(src),
-                                       words=context.vocabulary(paragraphs),
-                                       terms=want)
-            context.save_profile(key, profile)
-            logger.info("job %s: document profile: %s", job_id, profile or "none")
-        else:
-            logger.info("job %s: reusing document profile: %s", job_id, profile)
+        found = context.describe(probe, excerpt, context.title_of(src),
+                                 words=context.vocabulary(paragraphs),
+                                 terms=want)
+        profile.update({k: v for k, v in found.items() if k not in profile})
+        logger.info("job %s: seeded %d terms", job_id, len(found.get("terms") or ()))
 
     tr = MeteredDeepseekTranslator(lang_in, lang_out, model,
                                    envs=_envs(api_key, model, effort, job_id,
@@ -439,9 +450,8 @@ def _with_context(job_id: str, src: Path, api_key: str, model: str,
                                   threads=LLM_THREADS, limit=CHUNK_CHARS)
     # prepare() leaves the glossary it grew in `profile`; storing it means a
     # later run of the same document starts with the terminology settled
-    # instead of rediscovering it. Nothing to store when nothing was asked.
-    if key:
-        context.save_profile(key, profile)
+    # instead of rediscovering it.
+    context.save_profile(doc_key, profile)
     logger.info("job %s: %d/%d paragraphs translated with context, "
                 "%d terms in glossary", job_id, done, total,
                 len(profile.get("terms") or ()))
@@ -533,6 +543,7 @@ def _run_job(job_id: str, src: Path, api_key: str, model: str, lang_in: str,
     finally:
         # A failed job still burned tokens; record what it spent either way.
         context.forget_keys(job_id)
+        context.forget_brief(job_id)
         usage = METER.pop(job_id)
         STORE.add_usage(job_id, tokens_in_hit=usage["tokens_in_hit"],
                         tokens_in_miss=usage["tokens_in_miss"],

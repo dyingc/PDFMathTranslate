@@ -415,21 +415,31 @@ def _no_stale_assets():
                 f"{path} 缺少 no-store: {resp.headers.get('cache-control')!r}"
 
 
-@check("开场那次调用只在并发够高时才花")
-def _seed_only_when_concurrent():
-    """Describing the document up front exists to survive a cold start, which
-    is proportional to concurrency: conflicts needing repair went 31 -> 15 -> 4
-    as threads went 8 -> 2. Two runs whose description silently failed matched
+@check("两条文档事实随每个提示词走，术语种子只在并发高时买")
+def _brief_everywhere_seed_when_concurrent():
+    """The field and topic are cheap and ride in front of every prompt. The
+    larger term extraction is cold-start insurance, and a cold start is
+    proportional to concurrency: conflicts needing repair went 31 -> 15 -> 4 as
+    threads went 8 -> 2, and two runs whose extraction silently failed matched
     the best results ever measured on the same book."""
     import webapp.app as app
+    from webapp import context
 
     src = inspect.getsource(app._with_context)
-    assert "if LLM_THREADS > SEED_ABOVE_THREADS:" in src, \
-        "开场调用不再受并发条件控制"
-    # ...and everything it produces must be optional downstream, or skipping it
-    # would break the pass rather than shorten it.
-    assert "if key:" in src, "跳过开场调用后仍会尝试写描述文件"
+    assert "context.brief(" in src, "开场的两条事实不再无条件获取"
+    assert "context.use_brief(job_id, profile)" in src, "两条事实没有注册给逐段路径"
+    assert "LLM_THREADS > SEED_ABOVE_THREADS" in src, "术语种子不再受并发条件控制"
     assert app.SEED_ABOVE_THREADS >= 2
+
+    # The block is what actually reaches a prompt, so it has to survive a
+    # missing or partial brief rather than raise or print "None".
+    assert context.document_block({}) == ""
+    got = context.document_block({"field": "Computer Science", "topic": "T"})
+    assert "Computer Science" in got and "T" in got, got
+
+    # And the opening excerpt has to exist even for a one-paragraph document.
+    assert context.opening([]) == ""
+    assert context.opening(["x" * 40]) == "x" * 40
 
 
 @check("已是目标语言的文档会被认出来")

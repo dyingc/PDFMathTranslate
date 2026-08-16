@@ -83,6 +83,37 @@ class MeteredDeepseekTranslator(DeepseekTranslator):
 
         self._meter_client()
 
+    def prompt(self, text, prompt_template=None):
+        """Carry the document's field, topic and terms into a single paragraph.
+
+        This is the path a paragraph takes when the chunk holding it was
+        rejected — a misaligned reply, a call that failed twice. Those
+        paragraphs used to be the only text in the document translated with no
+        context and no terminology whatsoever, which is exactly the state this
+        whole layer exists to get out of. On one run there were 41 of them.
+        """
+        messages = super().prompt(text, prompt_template)
+        # pdf2zh calls this during __init__, before our own fields exist, to
+        # hash the prompt into the cache key. Returning the bare prompt there is
+        # also what we want: the key should not move with the document, which
+        # `doc` already covers.
+        job = getattr(self, "job_id", "")
+        if not job:
+            return messages
+        profile, glossary = context.brief_for(job)
+        block = context.document_block(profile)
+        terms = glossary.matching(text) if glossary else []
+        if not block and not terms:
+            return messages
+        preface = [block] if block else []
+        if terms:
+            preface.append("Use these agreed translations where they apply: "
+                           + "; ".join(f"{s} -> {t}" for s, t in terms))
+        # Before the instruction, not after: the model should know what it is
+        # reading before it is told what to do with it.
+        messages[0]["content"] = "\n".join(preface) + "\n\n" + messages[0]["content"]
+        return messages
+
     def translate(self, text: str, ignore_cache: bool = False) -> str:
         if self.collect:
             context.record(self.collect, text)

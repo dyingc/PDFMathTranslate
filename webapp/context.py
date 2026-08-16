@@ -126,6 +126,35 @@ def forget_keys(job_id: str) -> None:
         _keys.pop(job_id, None)
 
 
+# What a job knows about its document, reachable from the translator itself so
+# that paragraphs translated the old way — the ones a rejected chunk leaves
+# behind — are not the only text in the document sent with no context at all.
+# On one run that was 41 paragraphs.
+_briefs: dict = {}
+
+
+def use_brief(job_id: str, profile: dict, glossary=None) -> None:
+    with _lock:
+        _briefs[job_id] = (profile or {}, glossary)
+
+
+def forget_brief(job_id: str) -> None:
+    with _lock:
+        _briefs.pop(job_id, None)
+
+
+def brief_for(job_id: str) -> tuple:
+    with _lock:
+        return _briefs.get(job_id, ({}, None))
+
+
+def document_block(profile: dict) -> str:
+    """The two facts every prompt carries, or nothing if they are not known."""
+    lines = [f"{k.capitalize()}: {profile[k]}"
+             for k in ("field", "topic") if profile.get(k)]
+    return "This document — " + "; ".join(lines) if lines else ""
+
+
 def cache_key(job_id: str, text: str):
     """The key to cache `text` under, or None if it must not be cached.
 
@@ -143,6 +172,16 @@ def cache_key(job_id: str, text: str):
 
 # ---------------------------------------------------------------------------
 # Step 2: describe the document.
+
+# What every prompt in the job carries: two short facts, cheap to obtain and
+# cheap to repeat. Kept short deliberately — they ride in front of every chunk
+# and every fallback paragraph, and a long description would dilute the task.
+_BRIEF_PROMPT = (
+    "Below is the opening of a document. Reply with a JSON object with keys "
+    '"field" and "topic". "field" is its academic or technical field, at most '
+    '8 words. "topic" is what the document is about, at most 20 words. Use '
+    "the language of the document itself."
+)
 
 _PROFILE_PROMPT = (
     "Below are excerpts from a document. Reply with a JSON object with keys "
@@ -282,6 +321,49 @@ def _grounded(triples: list, excerpt: str) -> list:
         logger.info("glossary: %d proposed terms not visible in the excerpt, "
                     "left for chunk extraction: %s", len(dropped), dropped[:8])
     return kept
+
+
+def opening(paragraphs: list) -> str:
+    """The first stretch of the document, enough to say what it is about.
+
+    A fifth of the text, bounded: never less than a short paragraph's worth,
+    never more than about a thousand words. Identifying a document's field and
+    subject does not need the document — it needs its opening, which is where
+    a paper or a book says what it is doing.
+    """
+    usable = [p for p in paragraphs if not is_trivial(p)]
+    if not usable:
+        return ""
+    total = sum(len(p) for p in usable)
+    budget = min(6000, max(150, min(total, total // 5)))
+    out, used = [], 0
+    for para in usable:
+        out.append(para[:CLIP])
+        used += len(out[-1])
+        if used >= budget:
+            break
+    return "\n\n".join(out)
+
+
+def brief(tr, opening_text: str) -> dict:
+    """The document's field and topic: one small call, cached for the document.
+
+    Small on purpose. The larger description — terms, spellings, a summary —
+    asked for 80 objects and came back as 25kB of JSON cut mid-string. Two
+    short strings cannot fail that way, and they are the part every later
+    prompt actually carries.
+    """
+    if not opening_text:
+        return {}
+    try:
+        data = json.loads(_ask(tr, [{"role": "user",
+                                     "content": f"{_BRIEF_PROMPT}\n\n{opening_text}"}]))
+    except Exception as exc:      # noqa: BLE001 - context is an optimisation
+        logger.warning("document brief failed: %s", exc)
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: str(data[k])[:200] for k in ("field", "topic") if data.get(k)}
 
 
 def describe(tr, excerpt: str, title: str = "", words: str = "",
@@ -540,7 +622,7 @@ def _preamble(tr, profile: dict) -> str:
     # it grows while the job runs, and a preamble that changes would defeat the
     # prefix cache it sits in front of.
     lines = [f"{k.capitalize()}: {profile[k]}"
-             for k in ("title", "field", "summary") if profile.get(k)]
+             for k in ("title", "field", "topic", "summary") if profile.get(k)]
     block = "This document:\n" + "\n".join(lines) + "\n\n" if lines else ""
     return f"{_rules(tr)}\n\n{block}"
 
@@ -650,6 +732,10 @@ def prepare(tr, paragraphs: list, profile: dict = None, progress=None,
         profile = {}
     preamble = _preamble(tr, profile)
     glossary = Glossary(profile.get("terms"), profile.get("forms"))
+    # Reachable from the translator, so a paragraph left behind by a rejected
+    # chunk still gets the document's facts and whatever terms are agreed by
+    # the time it is retried.
+    use_brief(tr.job_id, profile, glossary)
 
     groups = chunks(unique, limit)
     done = finished = 0
