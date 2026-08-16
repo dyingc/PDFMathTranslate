@@ -44,6 +44,12 @@ CHUNK_CHARS = 1000
 PROFILE_CHARS = 6000     # sampled across the document, not just the front
 CLIP = 600           # per paragraph, so one long one cannot eat the budget
 
+# The opening sent to identify the document. Characters rather than words:
+# "word" has no reliable boundary in Chinese, Japanese or Korean, and this runs
+# on documents in any source language. 6000 is roughly a thousand English words.
+OPENING_CAP = 6000
+OPENING_FLOOR = 150
+
 # A paragraph with no letter in it (page numbers, "1.", stray symbols) or one or
 # two characters carries nothing to translate, and sending it is how "n" becomes
 # "TIP 的 n。".
@@ -335,7 +341,12 @@ def opening(paragraphs: list) -> str:
     if not usable:
         return ""
     total = sum(len(p) for p in usable)
-    budget = min(6000, max(150, min(total, total // 5)))
+    # Never more than the cap, never more than the document, and otherwise a
+    # fifth of it — with a floor, since a fifth of a two-page note is nothing.
+    # The floor has to be bounded by `total` from outside: written as
+    # max(FLOOR, min(total, total // 5)) the inner min is dead code, and the
+    # floor could then ask for more text than exists.
+    budget = min(OPENING_CAP, total, max(OPENING_FLOOR, total // 5))
     out, used = [], 0
     for para in usable:
         out.append(para[:CLIP])
