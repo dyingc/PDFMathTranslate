@@ -158,13 +158,12 @@ _PROFILE_PROMPT = (
     "whole document. The frequency list is for judging which of those terms "
     'matter and for collecting their other spellings into "forms" — a spelling '
     "needs no context, only recognition.\n\n"
-    "A term belongs here only when several renderings would all be correct and "
-    "something has to choose one, so that the document does not drift between "
-    "them: multi-word technical terms, proper nouns, acronyms, names of "
-    "systems and benchmarks. Do NOT propose an ordinary word on its own — "
-    '"fixed", "point", "value", "block" — even when it is frequent. Context '
-    "already settles what such a word means here, and fixing one rendering for "
-    "it corrupts every compound it appears in."
+    "Collect named entities, not vocabulary: proper nouns, acronyms, names of "
+    "systems, benchmarks and algorithms, and the field's coined terms — things "
+    "that are not ordinary language and have an established translation. Do "
+    'NOT propose an ordinary word on its own ("fixed", "point", "value", '
+    '"block"), however frequent. Context already settles what those mean, and '
+    "fixing one rendering for such a word corrupts every phrase it appears in."
 )
 
 
@@ -508,10 +507,11 @@ def _rules(tr) -> str:
         "<translation>}], \"terms\": [{\"source\": <term>, \"target\": "
         "<translation>}]} . \"segments\" "
         "holds exactly one entry per input segment, with the same ids. "
-        "\"terms\" holds the technical terms, proper nouns and acronyms you "
-        "translated that are NOT already in the glossary, spelled exactly as "
-        "in the source; give the same string as the translation for anything "
-        "that should stay in its original form."
+        "\"terms\" holds the named entities you translated that are NOT "
+        "already in the glossary — proper nouns, acronyms, names of systems "
+        "and algorithms, coined terms of the field — spelled exactly as in the "
+        "source. Not ordinary words, however frequent. Give the same string as "
+        "the translation for anything that should stay in its original form."
     )
 
 
