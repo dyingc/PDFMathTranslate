@@ -157,6 +157,12 @@ LLM_THREADS = _settings_int("llm_threads", "WEBAPP_LLM_THREADS", 4)
 # set WEBAPP_CONTEXT=0 to fall back to pdf2zh's own behaviour.
 CONTEXT = os.environ.get("WEBAPP_CONTEXT", "1").strip() not in ("0", "false", "no")
 
+# Characters per chunk sent for translation. Bigger means more context per
+# paragraph; smaller means fewer segments per reply, which a model without
+# thinking is measurably better at keeping aligned.
+CHUNK_CHARS = _settings_int("chunk_chars", "WEBAPP_CHUNK_CHARS",
+                            context.CHUNK_CHARS)
+
 # The interface language is a saved preference like any other; it is what the
 # very first screen (API key entry) renders in, so it must be known before the
 # UI draws anything.
@@ -345,19 +351,17 @@ def _pricing_now() -> dict:
 
 
 def _envs(api_key: str, model: str, effort: str, job_id: str,
-          collect: str = "", field: str = "") -> dict:
+          collect: str = "", doc: str = "") -> dict:
     return {"DEEPSEEK_API_KEY": api_key, "DEEPSEEK_MODEL": model,
             "DEEPSEEK_EFFORT": effort, "DEEPSEEK_JOB_ID": job_id,
-            "DEEPSEEK_COLLECT": collect, "DEEPSEEK_FIELD": field}
+            "DEEPSEEK_COLLECT": collect, "DEEPSEEK_DOC": doc}
 
 
 def _with_context(job_id: str, src: Path, api_key: str, model: str,
                   lang_in: str, lang_out: str, pages, effort: str,
-                  blocks: dict, lines: dict, order: list, report) -> str:
+                  blocks: dict, lines: dict, order: list, report,
+                  doc_key: str) -> None:
     """Pre-translate the document's paragraphs with their neighbours in view.
-
-    Returns the field it inferred for the document, which the real pass needs
-    in order to look cache entries up under the same key.
 
     Best-effort throughout: anything this leaves uncached is translated the
     ordinary way, one isolated paragraph at a time.
@@ -374,20 +378,21 @@ def _with_context(job_id: str, src: Path, api_key: str, model: str,
                       thread=1,          # keeps the paragraphs in reading order
                       vfont=VFONT, callback=lambda t: report(0, t),
                       model=ModelInstance.value,
-                      envs=_envs(api_key, model, effort, job_id, collect=job_id))
+                      envs=_envs(api_key, model, effort, job_id,
+                                 collect=job_id, doc=doc_key))
         paragraphs = list(sink)
     finally:
         context.drop(job_id)
     if not paragraphs:
-        return ""
+        return
 
     # Both this pass and the real one must agree on how a paragraph is keyed,
     # so the key map is registered for the whole job, not just for prepare().
     context.use_keys(job_id, paragraphs)
     STORE.update(job_id, stage="Translating in context")
 
-    # Describe the document before anything is cached: the field it yields is
-    # part of the cache key, so it has to be known before the first lookup.
+    # The description is only for the prompt now; the cache key is the
+    # document itself, so this no longer has to happen before any lookup.
     budget, want = context.sizing(paragraphs)
     excerpt = context.sample(paragraphs, budget)
     key = context.profile_key(excerpt)
@@ -395,7 +400,7 @@ def _with_context(job_id: str, src: Path, api_key: str, model: str,
     if profile is None:
         probe = MeteredDeepseekTranslator(
             lang_in, lang_out, model,
-            envs=_envs(api_key, model, effort, job_id))
+            envs=_envs(api_key, model, effort, job_id, doc=doc_key))
         profile = context.describe(probe, excerpt, context.title_of(src),
                                    words=context.vocabulary(paragraphs),
                                    terms=want)
@@ -403,14 +408,13 @@ def _with_context(job_id: str, src: Path, api_key: str, model: str,
         logger.info("job %s: document profile: %s", job_id, profile or "none")
     else:
         logger.info("job %s: reusing document profile: %s", job_id, profile)
-    field = profile.get("field", "")
 
     tr = MeteredDeepseekTranslator(lang_in, lang_out, model,
                                    envs=_envs(api_key, model, effort, job_id,
-                                              field=field))
+                                              doc=doc_key))
     done, total = context.prepare(tr, paragraphs, profile,
                                   progress=lambda f: report(1, f),
-                                  threads=LLM_THREADS)
+                                  threads=LLM_THREADS, limit=CHUNK_CHARS)
     # prepare() leaves the glossary it grew in `profile`; storing it means a
     # later run of the same document starts with the terminology settled
     # instead of rediscovering it.
@@ -418,7 +422,6 @@ def _with_context(job_id: str, src: Path, api_key: str, model: str,
     logger.info("job %s: %d/%d paragraphs translated with context, "
                 "%d terms in glossary", job_id, done, total,
                 len(profile.get("terms") or ()))
-    return field
 
 
 def _run_job(job_id: str, src: Path, api_key: str, model: str, lang_in: str,
@@ -454,12 +457,12 @@ def _run_job(job_id: str, src: Path, api_key: str, model: str, lang_in: str,
             # splits that line into three paragraphs, sometimes mid-word.
             lines = text_lines(src)
             order = pages if pages is not None else list(range(page_count(src)))
-            field = ""
+            doc_key = context.document_key(src)
             if CONTEXT:
                 try:
-                    field = _with_context(job_id, src, api_key, model, lang_in,
-                                          lang_out, pages, effort, blocks,
-                                          lines, order, report)
+                    _with_context(job_id, src, api_key, model, lang_in,
+                                  lang_out, pages, effort, blocks,
+                                  lines, order, report, doc_key)
                 except Exception as exc:      # noqa: BLE001 - quality, not correctness
                     logger.warning("context pass failed for %s: %s", job_id, exc)
             STORE.update(job_id, status="running", stage="Translating")
@@ -475,7 +478,7 @@ def _run_job(job_id: str, src: Path, api_key: str, model: str, lang_in: str,
                     vfont=VFONT,
                     callback=on_progress,
                     model=ModelInstance.value,
-                    envs=_envs(api_key, model, effort, job_id, field=field),
+                    envs=_envs(api_key, model, effort, job_id, doc=doc_key),
                 )
         # pdf2zh always writes both variants; keep only what was asked for.
         kinds = ["mono", "dual"] if output == "both" else [output]

@@ -645,7 +645,7 @@ def _translate_chunk(tr, preamble: str, chunk: list, glossary=None) -> dict:
 
 
 def prepare(tr, paragraphs: list, profile: dict = None, progress=None,
-            threads: int = 1) -> tuple:
+            threads: int = 1, limit: int = CHUNK_CHARS) -> tuple:
     """Fill pdf2zh's cache with context-aware translations. Returns (done, total).
 
     Whatever is left out stays uncached and is translated paragraph-by-paragraph
@@ -674,7 +674,7 @@ def prepare(tr, paragraphs: list, profile: dict = None, progress=None,
     preamble = _preamble(tr, profile)
     glossary = Glossary(profile.get("terms"), profile.get("forms"))
 
-    groups = chunks(unique)
+    groups = chunks(unique, limit)
     done = finished = 0
     lock = threading.Lock()
     written = []
@@ -774,6 +774,26 @@ def save_profile(key: str, profile: dict) -> None:
         _profile_path(key).write_text(json.dumps(profile, ensure_ascii=False))
     except OSError as exc:      # noqa: BLE001 - a cache, not a requirement
         logger.warning("could not save document profile: %s", exc)
+
+
+def document_key(path: Path) -> str:
+    """Identify a document by the text it contains.
+
+    Not by its bytes: re-saving a PDF rewrites every one of them and changes
+    nothing that a translation depends on. Not by the paragraphs collected for
+    this job either, since those follow the page selection — keyed that way,
+    translating pages 1-10 and then the whole book would share nothing.
+    """
+    import hashlib
+    import pymupdf
+    h = hashlib.sha256()
+    doc = pymupdf.open(path)
+    try:
+        for page in doc:
+            h.update(page.get_text().encode("utf-8", "replace"))
+    finally:
+        doc.close()
+    return h.hexdigest()[:16]
 
 
 def title_of(path: Path) -> str:

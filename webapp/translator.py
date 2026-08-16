@@ -32,8 +32,8 @@ class MeteredDeepseekTranslator(DeepseekTranslator):
         # note it down, so a whole layout run costs nothing and reveals exactly
         # which paragraphs the real run will ask for.
         "DEEPSEEK_COLLECT": "",
-        # The document's field, as inferred once per job. See below.
-        "DEEPSEEK_FIELD": "",
+        # Identifies the document this job is translating. See below.
+        "DEEPSEEK_DOC": "",
     }
 
     def __init__(self, lang_in, lang_out, model, envs=None, prompt=None,
@@ -63,15 +63,23 @@ class MeteredDeepseekTranslator(DeepseekTranslator):
         self.add_cache_impact_parameters("reasoning_effort",
                                          effort if effort != "off" else "")
 
-        # Translations are produced under a description of the document, so a
-        # cached one is only safely reusable somewhere that description still
-        # holds. The field is the part of it coarse enough to be worth sharing:
-        # two machine-learning papers can trade translations, a legal contract
-        # and a physics paper cannot. Title and summary stay out of the key —
-        # they are unique per document and would give every file its own
-        # private cache, which is the same as having no cache.
-        self.add_cache_impact_parameters("field",
-                                         (self.envs.get("DEEPSEEK_FIELD") or "").lower())
+        # Translations are produced under a description of the document and a
+        # glossary agreed for it, so a cached one belongs to that document.
+        #
+        # This was the field at first, on the theory that two machine-learning
+        # papers could trade translations. Two things killed that. Measured,
+        # cross-document reuse is worth nothing: 8259 cached entries and a new
+        # paper hit none of them, because it takes two documents sharing a long
+        # paragraph word for word. And the field is inferred by the model, so it
+        # is not stable — one book yielded "computer science", "static program
+        # analysis" and "computer science" across three runs, splitting its
+        # cache three ways and defeating the one case the cache exists for.
+        #
+        # The document's own text is stable by construction: unchanged by
+        # re-saving the file, and unchanged by translating a different page
+        # range of it.
+        self.add_cache_impact_parameters("doc",
+                                         self.envs.get("DEEPSEEK_DOC") or "")
 
         self._meter_client()
 
