@@ -404,6 +404,15 @@ class Glossary:
         survives is the case that matters: renderings with nothing whatsoever
         in common, like `token -> token` against `层次化标记建模`.
         """
+        # An entry that translates to itself is a decision to leave something
+        # alone, not a rendering that can disagree with anything. A Chinese
+        # name never shares a character with its Latin original, so the test
+        # below would condemn every one of them: `Henry Gordon Rice` kept as
+        # written was rejected for "contradicting" `Rice -> 赖斯`, and
+        # `Full Attention` as a baseline's name for contradicting
+        # `attention -> 注意力`. Both were right as they stood.
+        if target == source:
+            return None
         words = self._flat(source).lower().split()
         for other, rendering in self._terms.items():
             small = self._flat(other).lower()
