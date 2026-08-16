@@ -36,8 +36,11 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # Big enough that a paragraph sees real context, small enough that the model
-# does not start summarising — long outputs drift.
-CHUNK_CHARS = 2000
+# keeps the reply aligned. Measured on a 207-page book at 2000 characters: Pro
+# with thinking misaligned 0 replies, Flash with thinking 4, Flash without it
+# 11 — dropping 41 paragraphs back to isolated translation. At 1000 the same
+# configuration covered all 1412 paragraphs.
+CHUNK_CHARS = 1000
 PROFILE_CHARS = 6000     # sampled across the document, not just the front
 CLIP = 600           # per paragraph, so one long one cannot eat the budget
 

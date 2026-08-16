@@ -150,7 +150,13 @@ except (OSError, ValueError):
 # concurrent requests to DeepSeek, so the real request concurrency is the
 # product of the two — raise with the provider's rate limit in mind.
 WORKERS = _settings_int("workers", "WEBAPP_WORKERS", 2)
-LLM_THREADS = _settings_int("llm_threads", "WEBAPP_LLM_THREADS", 4)
+# Two, not more. Threads buy wall-clock and cost terminology: the opening wave
+# of chunks each settles terms without seeing the others. Measured on one book,
+# 8 threads left 31 conflicting renderings to repair, 2 left 4 — and dropping to
+# 1 left 2 while taking 65% longer, with the quality indistinguishable. What the
+# conflict count tracks is how much work the repair pass does, not how good the
+# result is.
+LLM_THREADS = _settings_int("llm_threads", "WEBAPP_LLM_THREADS", 2)
 
 # Translate paragraphs in chunks with the document described up front, instead
 # of one isolated paragraph per request. Costs one extra (API-free) layout pass;
