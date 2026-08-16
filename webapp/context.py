@@ -286,18 +286,29 @@ def describe(tr, excerpt: str, title: str = "", words: str = "",
     """One call, or none: a title/field/summary block for every later prompt."""
     if not excerpt:
         return {}
-    prompt = (_PROFILE_PROMPT.replace("{lang_out}", tr.lang_out)
-                             .replace("{terms}", str(terms)))
     body = f"Excerpts:\n{excerpt}"
     if words:
         body = f"Most frequent words in the whole document:\n{words}\n\n{body}"
-    try:
-        content = _ask(tr, [{"role": "user", "content": f"{prompt}\n\n{body}"}])
-        data = json.loads(content)
-        if not isinstance(data, dict):
-            return {}
-    except Exception as exc:      # noqa: BLE001 - context is an optimisation
-        logger.warning("document profile failed: %s", exc)
+
+    # Asking for 80 terms, each with its other spellings, produced 25kB of JSON
+    # and the reply was cut mid-string. Retrying with fewer is what the failure
+    # calls for — a shorter list of the most important terms is worth far more
+    # than a long one that never arrives.
+    data = None
+    for want in (terms, max(10, terms // 3)):
+        prompt = (_PROFILE_PROMPT.replace("{lang_out}", tr.lang_out)
+                                 .replace("{terms}", str(want)))
+        try:
+            data = json.loads(_ask(tr, [{"role": "user",
+                                         "content": f"{prompt}\n\n{body}"}]))
+        except Exception as exc:      # noqa: BLE001 - context is an optimisation
+            logger.warning("document profile failed (asked for %d terms): %s",
+                           want, exc)
+            continue
+        if isinstance(data, dict):
+            break
+        data = None
+    if data is None:
         return {}
     if title and not data.get("title"):
         data["title"] = title
@@ -628,7 +639,12 @@ def prepare(tr, paragraphs: list, profile: dict = None, progress=None,
 
     if not unique:
         return 0, 0
-    profile = profile or {}
+    # `profile or {}` would have made a *new* dict whenever the description
+    # came back empty, so the glossary grown below was written into a copy and
+    # thrown away — silently, and precisely when the description had already
+    # failed and the glossary mattered most.
+    if profile is None:
+        profile = {}
     preamble = _preamble(tr, profile)
     glossary = Glossary(profile.get("terms"), profile.get("forms"))
 
