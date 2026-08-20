@@ -633,6 +633,29 @@ def _marked_regions():
             path.unlink(missing_ok=True)
 
 
+@check("界表达式里没有可证明的死子句")
+def _dead_bounds():
+    import ast
+    from webapp import deadbound
+
+    # Calibrate first. A checker that has quietly become a no-op — one
+    # over-eager `except` around the evaluator would do it — passes this check
+    # by finding nothing, which is the same output as a clean tree.
+    def clauses(source):
+        return list(deadbound.analyse(ast.parse(source)))
+    # The original defect, and the form it should have had.
+    assert clauses("min(6000, max(150, min(total, total // 5)))")
+    assert not clauses("min(6000, total, max(150, total // 5))")
+    # A cap that only bites far above any fixed grid must not read as dead.
+    assert not clauses("min(max(3000, total // 20), 20000)")
+
+    here = Path(__file__).parent
+    found = [f"{p.name}:{n}: {level} `{clause}` in `{expr}`"
+             for p in sorted(here.glob("*.py"))
+             for n, expr, clause, level in deadbound.scan(p)]
+    assert not found, "\n        ".join(found)
+
+
 def main() -> int:
     failed = 0
     for name, fn in CHECKS:
