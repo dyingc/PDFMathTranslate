@@ -32,6 +32,10 @@
   .err { color: #dc2626; }
   a.dl { display:inline-block; margin-right:12px; color:var(--accent); font-size:13px; }
   .hint { font-size:12px; color:var(--muted); }
+  details.mark { margin-top:10px; }
+  details.mark > summary { font-size:13px; color:var(--accent); cursor:pointer; }
+  details.mark > .hint { margin:6px 0 8px; line-height:1.6; }
+  label.dl { cursor:pointer; }
   .job { border-top: 1px solid var(--line); padding: 12px 0; }
   .job:first-of-type { border-top: none; padding-top: 0; }
   .job-head { display:flex; justify-content:space-between; align-items:baseline; gap:12px; }
@@ -256,7 +260,17 @@ function job(j) {
             <div class="msg">${esc(j.stage || '')} ${pct}%</div>`;
   } else if (j.status === 'done') {
     body = j.kinds.map(k =>
-      `<a class="dl" href="/api/jobs/${j.id}/download/${k}">${esc(t('dl_' + k))}</a>`).join('');
+      `<a class="dl" href="/api/jobs/${j.id}/download/${k}">${esc(t('dl_' + k))}</a>`).join('')
+      + `<details class="mark">
+           <summary>${esc(t('mark_title'))}</summary>
+           <div class="hint">${t('mark_how')}</div>
+           ${j.has_source
+              ? `<a class="dl" href="/api/jobs/${j.id}/source">${esc(t('mark_get'))}</a>`
+              : `<div class="hint">${esc(t('mark_nosrc'))}</div>`}
+           <label class="dl" for="mk-${j.id}">${esc(t('mark_put'))}</label>
+           <input type="file" id="mk-${j.id}" accept="application/pdf"
+                  style="display:none" onchange="sendMarks('${j.id}', this)">
+         </details>`;
   } else {
     // Stored errors are either an i18n key or a raw exception from the provider.
     const e = j.error || '';
@@ -300,6 +314,26 @@ async function resume(id) {
     const e = await errOf(r);
     showMsg('msg', e.code, e.raw, true);
     if (r.status === 401) toggle(false);
+  }
+  refresh();
+}
+
+// Keeps the rectangles from a marked-up copy and translates again. Only the
+// coordinates are kept, so the marked file itself never has to be uploaded twice.
+async function sendMarks(id, input) {
+  const file = input.files[0];
+  if (!file) return;
+  const form = new FormData();
+  form.append('file', file);
+  const r = await fetch(`/api/jobs/${id}/regions`, { method: 'POST', body: form });
+  input.value = '';
+  if (!r.ok) {
+    const e = await errOf(r);
+    showMsg('msg', e.code, e.raw, true);
+    if (r.status === 401) toggle(false);
+  } else {
+    const d = await r.json();
+    showMsg('msg', 'mark_ok', `${d.regions} / ${d.pages}`, false);
   }
   refresh();
 }

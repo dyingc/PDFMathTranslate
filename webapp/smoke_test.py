@@ -586,6 +586,53 @@ def _hidden_text():
     assert converter.hidden_boxes() == {}
 
 
+@check("只有黑色虚线方框算作保留区，读书批注不算")
+def _marked_regions():
+    import tempfile
+    import pymupdf
+    from webapp import regions
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+
+    def box(rect, stroke, dashes, width=0.5):
+        a = page.add_rect_annot(pymupdf.Rect(*rect))
+        a.set_colors(stroke=stroke)
+        a.set_border(width=width, dashes=dashes)
+        a.update()
+
+    box((100, 100, 300, 200), (0, 0, 0), [1, 2])            # the convention
+    box((100, 250, 300, 300), (0, 0.59, 1), [])             # Preview's default
+    box((100, 350, 300, 400), (0, 0, 0), [])                # black but solid
+    box((100, 450, 300, 500), (1, 0, 0), [1, 2])            # dashed but red
+    page.add_highlight_annot(pymupdf.Rect(100, 550, 300, 560))
+    with tempfile.NamedTemporaryFile(suffix=".pdf") as fh:
+        doc.save(fh.name)
+        found = regions.marked_regions(Path(fh.name))
+
+    assert list(found) == [0], f"预期只有第 1 页有标注，实得 {list(found)}"
+    assert len(found[0]) == 1, f"只有黑色虚线框算数，实得 {found[0]}"
+    assert abs(found[0][0][1] - 100) < 2, found[0][0]
+
+    # Remembered against the document, not the job, and merged into what the
+    # font-based pass already found.
+    key = "0" * 16
+    path = regions._path(key)
+    existed = path.exists()
+    backup = path.read_bytes() if existed else None
+    try:
+        regions.save(key, found)
+        blocks = {0: ["existing"]}
+        assert regions.merge(blocks, regions.load(key)) == 1
+        assert len(blocks[0]) == 2, blocks
+        assert regions.load("f" * 16) == {}
+    finally:
+        if existed:
+            path.write_bytes(backup)
+        else:
+            path.unlink(missing_ok=True)
+
+
 def main() -> int:
     failed = 0
     for name, fn in CHECKS:

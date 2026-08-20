@@ -39,6 +39,7 @@ from webapp.pricing import METER, TABLE  # noqa: E402
 from webapp.deghost import deghost  # noqa: E402
 from webapp.links import restore_links  # noqa: E402
 from webapp.langcheck import already_translated  # noqa: E402
+from webapp import regions  # noqa: E402
 from webapp.scanned import dual_page_for, is_scanned, whiteout  # noqa: E402
 from webapp.toc import without_toc  # noqa: E402
 from webapp.verbatim import (  # noqa: E402
@@ -495,6 +496,15 @@ def _run_job(job_id: str, src: Path, api_key: str, model: str, lang_in: str,
             hidden = hidden_spans(src)
             order = pages if pages is not None else list(range(page_count(src)))
             doc_key = context.document_key(src)
+            # Before the context pass, so the pre-translation sees the same
+            # paragraphs the real run will: a marked region changes where the
+            # paragraphs around it begin and end, and a chunk translated
+            # against the old boundaries would be cached under keys the real
+            # run never asks for.
+            marked = regions.load(doc_key)
+            if marked:
+                logger.info("job %s: %d marked regions on %d pages", job_id,
+                            regions.merge(blocks, marked), len(marked))
             if CONTEXT:
                 try:
                     _with_context(job_id, src, api_key, model, lang_in,
@@ -540,7 +550,10 @@ def _run_job(job_id: str, src: Path, api_key: str, model: str, lang_in: str,
                 restore_links(src, path, mapping)
             except Exception as exc:      # noqa: BLE001 - cosmetic, never fatal
                 logger.warning("link restore failed for %s: %s", job_id, exc)
-        src.unlink(missing_ok=True)  # the upload is reproducible; the output is not
+        # The upload used to be deleted here, on the grounds that it could
+        # always be uploaded again. It cannot any more: marking regions means
+        # drawing on the original and translating it again, so the original has
+        # to survive its own job. Deleting the job still takes it with it.
         STORE.update(job_id, status="done", progress=1.0, stage="Completed",
                      kinds=kinds)
     except Exception as exc:  # noqa: BLE001
@@ -677,7 +690,12 @@ def _parse_pages(spec: str) -> Optional[list]:
 
 @app.get("/api/jobs")
 def list_jobs():
-    return {"jobs": STORE.list()}
+    jobs = STORE.list()
+    for job in jobs:
+        # Jobs that finished before the upload was kept have no original to
+        # hand back, so the interface offers marking without offering step one.
+        job["has_source"] = _source_of(job) is not None
+    return {"jobs": jobs}
 
 
 @app.get("/api/jobs/{job_id}")
@@ -709,6 +727,60 @@ def download(job_id: str, kind: str):
     if not path.exists():
         raise HTTPException(status_code=410, detail="err_file_gone")
     return FileResponse(path, media_type="application/pdf", filename=path.name)
+
+
+@app.get("/api/jobs/{job_id}/source")
+def download_source(job_id: str):
+    """The original PDF, to be marked up in whatever viewer is at hand."""
+    job = STORE.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="err_unknown_job")
+    src = _source_of(job)
+    if src is None:
+        raise HTTPException(status_code=410, detail="err_no_source")
+    return FileResponse(src, media_type="application/pdf", filename=src.name)
+
+
+@app.post("/api/jobs/{job_id}/regions")
+async def upload_regions(job_id: str, sid: Optional[str] = Cookie(None),
+                         file: UploadFile = File(...)):
+    """Take the marked-up copy, keep its rectangles, and translate again.
+
+    The marked copy is read and discarded — only the rectangles are kept, and
+    against the document's own text rather than this job, so the marking
+    outlives the job that produced it.
+    """
+    api_key = _require_key(sid)
+    job = STORE.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="err_unknown_job")
+    marked = job_dir(job_id) / "marked.pdf"
+    marked.parent.mkdir(parents=True, exist_ok=True)
+    marked.write_bytes(await file.read())
+    try:
+        found = regions.marked_regions(marked)
+    except Exception as exc:      # noqa: BLE001 - a file we cannot read
+        marked.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="err_bad_pdf") from exc
+    if not found:
+        marked.unlink(missing_ok=True)
+        raise HTTPException(status_code=422, detail="err_no_regions")
+
+    src = _source_of(job)
+    if src is None:
+        # Jobs finished before the upload was kept have no original left, and
+        # the marked copy is one — minus the marks, which would otherwise be
+        # drawn across the translation.
+        src = job_dir(job_id) / (job.get("src_name") or f"{job['name']}.pdf")
+        regions.strip(marked, src)
+    marked.unlink(missing_ok=True)
+
+    regions.save(context.document_key(src), found)
+    STORE.update(job_id, status="queued", stage="Queued", error="",
+                 progress=0.0, src_name=src.name)
+    _submit(job, src, api_key)
+    return {"pages": len(found),
+            "regions": sum(len(v) for v in found.values())}
 
 
 app.mount("/", StaticFiles(directory=BASE_DIR / "static", html=True), name="static")
