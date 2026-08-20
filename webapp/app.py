@@ -42,7 +42,8 @@ from webapp.langcheck import already_translated  # noqa: E402
 from webapp.scanned import dual_page_for, is_scanned, whiteout  # noqa: E402
 from webapp.toc import without_toc  # noqa: E402
 from webapp.verbatim import (  # noqa: E402
-    install as install_verbatim, marking, text_lines, verbatim_blocks,
+    hidden_spans, install as install_verbatim, marking, text_lines,
+    verbatim_blocks,
 )
 
 
@@ -371,7 +372,7 @@ def _envs(api_key: str, model: str, effort: str, job_id: str,
 def _with_context(job_id: str, src: Path, api_key: str, model: str,
                   lang_in: str, lang_out: str, pages, effort: str,
                   blocks: dict, lines: dict, order: list, report,
-                  doc_key: str) -> None:
+                  doc_key: str, hidden: dict) -> None:
     """Pre-translate the document's paragraphs with their neighbours in view.
 
     Best-effort throughout: anything this leaves uncached is translated the
@@ -382,7 +383,7 @@ def _with_context(job_id: str, src: Path, api_key: str, model: str,
     STORE.update(job_id, stage="Reading document")
     sink = context.collect_into(job_id)
     try:
-        with marking(order, blocks, lines):
+        with marking(order, blocks, lines, hidden):
             translate(files=[str(src)], output=str(src.parent), pages=pages,
                       lang_in=lang_in, lang_out=lang_out,
                       service=f"deepseek:{model}",
@@ -489,17 +490,21 @@ def _run_job(job_id: str, src: Path, api_key: str, model: str, lang_in: str,
             # A layout region that covers the middle of a line but not its ends
             # splits that line into three paragraphs, sometimes mid-word.
             lines = text_lines(src)
+            # Text the source had painted over must not be
+            # revived by re-drawing it above the graphics.
+            hidden = hidden_spans(src)
             order = pages if pages is not None else list(range(page_count(src)))
             doc_key = context.document_key(src)
             if CONTEXT:
                 try:
                     _with_context(job_id, src, api_key, model, lang_in,
                                   lang_out, pages, effort, blocks,
-                                  lines, order, report, doc_key)
+                                  lines, order, report, doc_key,
+                                  hidden)
                 except Exception as exc:      # noqa: BLE001 - quality, not correctness
                     logger.warning("context pass failed for %s: %s", job_id, exc)
             STORE.update(job_id, status="running", stage="Translating")
-            with marking(order, blocks, lines):
+            with marking(order, blocks, lines, hidden):
                 translate(
                     files=[str(src)],
                     output=str(out_dir),

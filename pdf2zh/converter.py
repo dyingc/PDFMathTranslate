@@ -1,6 +1,7 @@
 import concurrent.futures
 import logging
 import re
+import threading
 import unicodedata
 from enum import Enum
 from string import Template
@@ -128,6 +129,42 @@ class Paragraph:
         self.brk: bool = brk  # 换行标记
 
 
+_hidden = threading.local()
+
+
+def hidden_boxes() -> dict:
+    """Regions, per page index, whose characters were invisible in the source.
+
+    Working out that a character was painted over needs the page's drawing
+    order, which pdfminer's layout tree has already discarded. So the caller
+    supplies the answer instead of this module computing it.
+    """
+    return getattr(_hidden, "boxes", None) or {}
+
+
+def hide(boxes: dict) -> None:
+    """Set the hidden regions for this thread. Pass {} to clear."""
+    _hidden.boxes = boxes or {}
+    _hidden.budgets = {}
+
+
+def hidden_budgets(pageid) -> list:
+    """Mutable [x0, y0, x1, y1, remaining] for a page, created on first use.
+
+    Kept per page rather than per call because `receive_layout` runs once for
+    the page and once for every figure on it. A budget in a local would reset
+    between those calls, and the buried copy of a label and the visible one are
+    not necessarily reached in the same one — so the buried copy would survive
+    on any page whose figures are split up.
+    """
+    budgets = getattr(_hidden, "budgets", None)
+    if budgets is None:
+        budgets = _hidden.budgets = {}
+    if pageid not in budgets:
+        budgets[pageid] = [list(box) for box in hidden_boxes().get(pageid, ())]
+    return budgets[pageid]
+
+
 # fmt: off
 class TranslateConverter(PDFConverterEx):
     def __init__(
@@ -226,8 +263,29 @@ class TranslateConverter(PDFConverterEx):
 
         ############################################################
         # A. 原文档解析
+        # Budgets, not just boxes: the visible copy of a doubly-drawn label sits
+        # in the same place as the buried one, so position alone cannot tell
+        # them apart. What separates them is order — pdfminer hands over a
+        # page's children as they were drawn — so each box gives up only as
+        # many characters as were buried there, and the later copy survives.
+        hidden = hidden_budgets(ltpage.pageid)
         for child in ltpage:
             if isinstance(child, LTChar):
+                # Characters the source painted over stay painted over. Every
+                # character is re-drawn after the page's graphics, so one that
+                # a later fill had covered would otherwise resurface — in a
+                # figure whose node labels are drawn twice, the buried first
+                # copy lands on top of the visible second one.
+                # By centre, not by containment: the supplied box comes from a
+                # different measurement of the same glyphs and need not enclose
+                # pdfminer's idea of their ascenders and descenders.
+                ccx, ccy = (child.x0 + child.x1) / 2, (child.y0 + child.y1) / 2
+                buried = next((b for b in hidden if b[4] > 0
+                               and b[0] <= ccx <= b[2] and b[1] <= ccy <= b[3]),
+                              None)
+                if buried is not None:
+                    buried[4] -= 1
+                    continue
                 cur_v = False
                 layout = self.layout[ltpage.pageid]
                 # ltpage.height 可能是 fig 里面的高度，这里统一用 layout.shape

@@ -548,6 +548,44 @@ def _layout_model():
     assert hasattr(OnnxModel, "load_available")
 
 
+@check("被后画的填充盖住的文字会被认出来，可见的那一份留下")
+def _hidden_text():
+    import tempfile
+    import pymupdf
+    from pdf2zh import converter
+    from webapp.verbatim import hidden_spans
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    # The shape that hides it must be drawn *after* the buried text and
+    # *before* the visible one, which is how a figure with doubly-drawn
+    # labels is put together.
+    page.insert_text((100, 100), "COND", fontsize=10)
+    page.draw_rect(pymupdf.Rect(90, 85, 160, 105), color=None,
+                   fill=(1, 1, 1))
+    page.insert_text((100, 100), "PRED", fontsize=10)
+    page.insert_text((100, 300), "visible", fontsize=10)
+    with tempfile.NamedTemporaryFile(suffix=".pdf") as fh:
+        doc.save(fh.name)
+        found = hidden_spans(Path(fh.name))
+
+    boxes = found.get(0, [])
+    assert len(boxes) == 1, f"预期只藏了一处，实得 {boxes}"
+    x0, y0, x1, y1, count = boxes[0]
+    assert count == 4, f"字符数应为 COND 的 4，实得 {count}"
+    # Flipped into pdfminer's bottom-up space: near the top of an 842pt page.
+    assert y0 > page.rect.height / 2, f"坐标未翻转：{y0}"
+    # Untouched text far below must not be caught.
+    assert not any(b[1] < page.rect.height / 2 for b in boxes)
+
+    # The converter reads them per thread, and only for the thread that set them.
+    assert converter.hidden_boxes() == {}
+    converter.hide(found)
+    assert converter.hidden_boxes() == found
+    converter.hide({})
+    assert converter.hidden_boxes() == {}
+
+
 def main() -> int:
     failed = 0
     for name, fn in CHECKS:

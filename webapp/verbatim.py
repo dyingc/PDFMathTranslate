@@ -19,6 +19,7 @@ from pathlib import Path
 
 import numpy as np
 import pymupdf
+from pdf2zh import converter
 from pdf2zh.doclayout import YoloBox
 
 # Font families used for code and other verbatim material.
@@ -96,6 +97,64 @@ def text_lines(path: Path) -> dict:
                         rects.append(rect)
             if rects:
                 found[i] = rects
+        return found
+    finally:
+        doc.close()
+
+
+COVERED = 0.9        # of a span's area, before a later fill counts as hiding it
+OPAQUE = 0.9         # fill opacity below which the text still shows through
+PAD_HIDDEN = 0.5     # points of slack, since the box must contain whole glyphs
+
+
+def hidden_spans(path: Path) -> dict:
+    """Text painted over by a later fill, per zero-based page index.
+
+    Figures exported from drawing tools often carry every label twice: once
+    before the node shapes and once after, so the first copy is buried. Nothing
+    shows this in the text layer — both copies extract identically — and it
+    stays harmless until something re-draws the text above the graphics, which
+    is exactly what translation does. In this corpus one figure had a node
+    renamed between the two copies, and the buried `COND` landed on top of the
+    visible `PRED`.
+
+    Drawing order is what settles it, and pdfminer's layout tree has already
+    lost it, so the question is answered here with pymupdf's `seqno` and handed
+    to the converter.
+    """
+    doc = pymupdf.open(path)
+    try:
+        found = {}
+        for i, page in enumerate(doc):
+            fills = [(d["seqno"], pymupdf.Rect(d["rect"]))
+                     for d in page.get_drawings()
+                     if d.get("fill") is not None
+                     and (d.get("fill_opacity") or 1) >= OPAQUE]
+            if not fills:
+                continue
+            boxes = []
+            for span in page.get_texttrace():
+                box = pymupdf.Rect(span["bbox"])
+                if box.is_empty or not box.get_area():
+                    continue
+                for seq, rect in fills:
+                    if seq <= span["seqno"]:
+                        continue
+                    covered = (box & rect).get_area() / box.get_area()
+                    if covered > COVERED:
+                        boxes.append((box + (-PAD_HIDDEN, -PAD_HIDDEN,
+                                             PAD_HIDDEN, PAD_HIDDEN),
+                                      len(span["chars"])))
+                        break
+            if boxes:
+                # pymupdf measures y downwards from the top of the page and
+                # pdfminer upwards from the bottom, so the box has to be
+                # flipped before the converter can compare it with a character.
+                # Keyed the way the converter asks: `LTPage(page.pageno, ...)`,
+                # which is the zero-based index, not the printed page number.
+                height = page.rect.height
+                found[i] = [(b.x0, height - b.y1, b.x1, height - b.y0, n)
+                            for b, n in boxes]
         return found
     finally:
         doc.close()
@@ -181,12 +240,14 @@ def install(model) -> None:
 
 
 @contextmanager
-def marking(pages, blocks, lines=None):
-    """Apply `blocks` and line healing to this thread's pages, in order."""
+def marking(pages, blocks, lines=None, hidden=None):
+    """Apply `blocks`, line healing and hidden text to this thread's pages."""
     _state.pages, _state.blocks, _state.cursor = list(pages), blocks, 0
     _state.lines = lines or {}
+    converter.hide(hidden or {})
     try:
         yield
     finally:
         _state.pages, _state.blocks, _state.cursor = None, {}, 0
         _state.lines = {}
+        converter.hide({})
