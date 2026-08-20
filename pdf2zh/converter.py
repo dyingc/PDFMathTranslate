@@ -381,12 +381,34 @@ class TranslateConverter(PDFConverterEx):
         default_line_height = LANG_LINEHEIGHT_MAP.get(self.translator.lang_out.lower(), 1.1) # 小语种默认1.1
         _x, _y = 0, 0
         ops_list = []
+        cur_color = None    # emitted fill colour, so it is stated only on change
 
         def gen_op_txt(font, size, x, y, rtxt):
             return f"/{font} {size:f} Tf 1 0 0 1 {x:f} {y:f} Tm [<{rtxt}>] TJ "
 
         def gen_op_line(x, y, xlen, ylen, linewidth):
             return f"ET q 1 0 0 1 {x:f} {y:f} cm [] 0 d 0 J {linewidth:f} w 0 0 m {xlen:f} {ylen:f} l S Q BT "
+
+        def gen_op_color(ncolor):
+            """Fill colour for a preserved character, defaulting to black.
+
+            Preserved characters are re-drawn rather than copied, so whatever
+            colour the original graphics state carried is lost unless it is
+            re-stated here. In a figure that costs the reader the meaning: a
+            statement marked red to show which one is vulnerable, or edges
+            distinguished only by colour, come out uniformly black.
+            """
+            if isinstance(ncolor, (int, float)):
+                return f"{float(ncolor):f} g "
+            if isinstance(ncolor, (tuple, list)) and ncolor:
+                vals = " ".join(f"{float(v):f}" for v in ncolor)
+                if len(ncolor) == 3:
+                    return f"{vals} rg "
+                if len(ncolor) == 4:
+                    return f"{vals} k "
+                if len(ncolor) == 1:
+                    return f"{vals} g "
+            return "0 g "
 
         for id, new in enumerate(news):
             x: float = pstk[id].x                       # 段落初始横坐标
@@ -467,7 +489,8 @@ class TranslateConverter(PDFConverterEx):
                             "x": x + vch.x0 - var[vid][0].x0,
                             "dy": fix + vch.y0 - var[vid][0].y0,
                             "rtxt": raw_string(self.fontid[vch.font], vc),
-                            "lidx": lidx
+                            "lidx": lidx,
+                            "color": vch.graphicstate.ncolor
                         })
                         if log.isEnabledFor(logging.DEBUG):
                             lstk.append(LTLine(0.1, (_x, _y), (x + vch.x0 - var[vid][0].x0, fix + y + vch.y0 - var[vid][0].y0)))
@@ -517,6 +540,12 @@ class TranslateConverter(PDFConverterEx):
 
             for vals in ops_vals:
                 if vals["type"] == OpType.TEXT:
+                    # Translated text has no colour of its own and falls back
+                    # to black, which is also what it was drawn in before.
+                    op = gen_op_color(vals.get("color"))
+                    if op != cur_color:
+                        ops_list.append(op)
+                        cur_color = op
                     ops_list.append(gen_op_txt(vals["font"], vals["size"], vals["x"], vals["dy"] + y - vals["lidx"] * size * line_height, vals["rtxt"]))
                 elif vals["type"] == OpType.LINE:
                     ops_list.append(gen_op_line(vals["x"], vals["dy"] + y - vals["lidx"] * size * line_height, vals["xlen"], vals["ylen"], vals["linewidth"]))
