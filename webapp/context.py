@@ -691,12 +691,19 @@ def _translate_chunk(tr, preamble: str, chunk: list, glossary=None) -> dict:
     ]
     want = {i for i, _ in chunk}
     for attempt in range(2):
+        reply = None
         try:
-            data = json.loads(_ask(tr, messages))
+            reply = _ask(tr, messages)
+            data = json.loads(reply)
             segments = data["segments"]
             got = {int(s["id"]): str(s["text"]) for s in segments}
         except Exception as exc:      # noqa: BLE001
-            logger.warning("chunk translation failed (try %d): %s", attempt + 1, exc)
+            # With the reply quoted, "'id'" becomes a readable sentence: a
+            # KeyError's own message names the key and nothing else, which says
+            # neither what came back nor whether the call even reached a model.
+            excerpt = f" | reply: {reply[:160]!r}" if reply else ""
+            logger.warning("chunk translation failed (try %d): %s%s",
+                           attempt + 1, exc, excerpt)
             continue
         if set(got) != want or not all(t.strip() for t in got.values()):
             logger.warning("chunk translation misaligned (try %d): "
