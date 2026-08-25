@@ -36,6 +36,9 @@
   details.mark > summary { font-size:13px; color:var(--accent); cursor:pointer; }
   details.mark > .hint { margin:6px 0 8px; line-height:1.6; }
   label.dl { cursor:pointer; }
+  label.cb { display:flex; align-items:center; gap:7px; font-size:13px;
+             margin:3px 0; font-weight:400; color:var(--fg); }
+  label.cb input { width:13px; height:13px; margin:0; flex:none; }
   .job { border-top: 1px solid var(--line); padding: 12px 0; }
   .job:first-of-type { border-top: none; padding-top: 0; }
   .job-head { display:flex; justify-content:space-between; align-items:baseline; gap:12px; }
@@ -55,11 +58,20 @@
 <div class="msg" id="topMsg" style="margin-top:-8px"></div>
 
 <h1 data-i18n="title"></h1>
-<p class="sub" data-i18n="subtitle"></p>
+<p class="sub" data-i18n-vendor="subtitle"></p>
 
 <section id="keyBox">
   <div class="field">
-    <label for="key" data-i18n="api_key"></label>
+    <label for="vendor" data-i18n="vendor"></label>
+    <select id="vendor"></select>
+  </div>
+  <div class="field">
+    <label for="baseUrl" data-i18n="base_url"></label>
+    <input id="baseUrl" type="text" spellcheck="false" autocomplete="off">
+    <div class="hint" data-i18n="base_url_note"></div>
+  </div>
+  <div class="field">
+    <label for="key" data-i18n-vendor="api_key"></label>
     <input id="key" type="password" placeholder="sk-..." autocomplete="off">
   </div>
   <button id="saveKey" data-i18n="save_key"></button>
@@ -83,6 +95,11 @@
   <div class="row">
     <div class="field"><label for="pages" data-i18n="pages"></label><input id="pages" data-i18n-ph="pages_ph"></div>
     <div class="field"><label for="output" data-i18n="output"></label><select id="output"></select></div>
+  </div>
+  <div class="field">
+    <label class="cb"><input type="checkbox" id="cacheRead" checked> <span data-i18n="cache_read"></span></label>
+    <label class="cb"><input type="checkbox" id="cacheWrite" checked> <span data-i18n="cache_write"></span></label>
+    <div class="hint" data-i18n="cache_note"></div>
   </div>
   <button id="go" data-i18n="start"></button>
   <div class="msg" id="msg"></div>
@@ -158,13 +175,16 @@ function applyI18n() {
   document.documentElement.lang = lang;
   document.title = t('title');
   for (const el of document.querySelectorAll('[data-i18n]')) el.textContent = t(el.dataset.i18n);
+  // Two strings name the provider, and which one that is changes with the
+  // selector above them — the label must not still read DeepSeek while the
+  // dropdown says OpenAI.
+  renderVendorName();
   for (const el of document.querySelectorAll('[data-i18n-ph]')) el.placeholder = t(el.dataset.i18nPh);
 
-  fillKeep($('model'), Object.entries(cfg.models)
-    .map(([v, m]) => [v, `${m.label} · ${t(m.hint)}`]));
+  fillKeep($('vendor'), Object.entries(cfg.vendors).map(([v, x]) => [v, x.label]));
+  if (cfg.vendor) $('vendor').value = cfg.vendor;
   fillKeep($('output'), Object.entries(cfg.outputs).map(([v, k]) => [v, t(k)]));
-  fillKeep($('effort'), cfg.efforts.map(e => [e, t('effort_' + e)]));
-  renderPrice();
+  renderVendor();
   fillKeep($('langIn'), Object.entries(cfg.languages));
   fillKeep($('langOut'), Object.entries(cfg.languages));
 
@@ -176,13 +196,40 @@ function applyI18n() {
   render();
 }
 
+// A key belongs to one provider, so the models and thinking levels on offer
+// are that provider's. Where it offers only one level, the control is shown
+// but disabled: greying it out says "not your choice here", where hiding it
+// would suggest the setting does not exist.
+function renderVendorName() {
+  const picked = $('vendor').value || cfg.vendor || cfg.default_vendor;
+  const v = cfg.vendors[picked] || {};
+  for (const el of document.querySelectorAll('[data-i18n-vendor]')) {
+    el.textContent = t(el.dataset.i18nVendor, { vendor: v.label || '' });
+  }
+  // The address belongs to the provider, so switching provider brings back
+  // whatever was last used for that one rather than carrying this one over.
+  $('baseUrl').value = v.base_url || '';
+  $('baseUrl').placeholder = v.official_url || '';
+}
+
+function renderVendor() {
+  const v = cfg.vendors[cfg.vendor] || cfg.vendors[cfg.default_vendor];
+  fillKeep($('model'), Object.entries(v.models)
+    .map(([id, m]) => [id, `${m.label} · ${t(m.hint)}`]));
+  fillKeep($('effort'), v.efforts.map(e => [e, t('effort_' + e)]));
+  const only = v.efforts.length < 2;
+  $('effort').disabled = only;
+  if (only) $('effort').value = v.default_effort;
+  renderPrice();
+}
+
 // Rates depend on the model and on whether we are in peak hours right now.
 function renderPrice() {
   const p = cfg.pricing, m = $('model').value, r = p.rates[m];
   if (!r) { $('priceHint').textContent = ''; return; }
-  const money = v => `${p.symbol}${v}`;
+  const money = v => `${p.symbols[m] || ''}${v}`;
   $('priceHint').textContent = t('price_hint', {
-    period: t('period_' + p.period), model: cfg.models[m].label,
+    period: t('period_' + p.period), model: (cfg.models[m] || {}).label || m,
     miss: money(r.cache_miss), out: money(r.output), hit: money(r.cache_hit),
   }) + ' · ' + t('price_note');
 }
@@ -216,6 +263,8 @@ async function errOf(resp) {
 
 // --- form preferences (not secrets) -----------------------------------------
 const PREF_KEYS = ['model', 'effort', 'output', 'langIn', 'langOut', 'pages'];
+// Deliberately not remembered: both are per-run decisions, and a
+// forgotten "don't reuse" would silently re-bill the next document.
 function restorePrefs() {
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem('prefs') || '{}'); } catch (e) {}
@@ -225,11 +274,15 @@ function restorePrefs() {
     if (el.tagName === 'SELECT' && ![...el.options].some(o => o.value === saved[k])) continue;
     el.value = saved[k];
   }
-  if (!saved.effort) $('effort').value = cfg.default_effort;
+  if (!saved.effort) {
+    const v = cfg.vendors[cfg.vendor] || cfg.vendors[cfg.default_vendor];
+    $('effort').value = v.default_effort;
+  }
   if (!saved.langIn) $('langIn').value = 'en';
   if (!saved.langOut) $('langOut').value = 'zh';
   for (const k of PREF_KEYS) $(k).addEventListener('change', savePrefs);
   $('model').addEventListener('change', renderPrice);
+  $('vendor').addEventListener('change', renderVendorName);
   renderPrice();   // the restored model may differ from the default
 }
 function savePrefs() {
@@ -299,7 +352,10 @@ const kilo = n => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
 function cost(j) {
   if (!j.calls) return '';
   const p = cfg.pricing;
-  const money = `${p.symbol}${j.cost < 0.01 ? j.cost.toFixed(4) : j.cost.toFixed(2)}`;
+  // Per model, not per app: a DeepSeek job was billed in yuan and an OpenAI
+  // one in dollars, and the list shows both at once.
+  const sym = p.symbols[j.model] || '';
+  const money = `${sym}${j.cost < 0.01 ? j.cost.toFixed(4) : j.cost.toFixed(2)}`;
   const line = (j.priced ? t('cost_approx', { cost: money }) + ' · ' : '')
     + t('tokens_stat', {
         in_: kilo(j.tokens_in_hit + j.tokens_in_miss), hit: kilo(j.tokens_in_hit),
@@ -347,8 +403,21 @@ async function del(id) {
 // --- actions ----------------------------------------------------------------
 $('saveKey').onclick = async () => {
   showMsg('keyMsg', 'validating', '', false);
-  const r = await fetch('/api/session', { method: 'POST', body: form({ api_key: $('key').value }) });
-  if (r.ok) { $('key').value = ''; showMsg('keyMsg', null); toggle(true); }
+  const vendor = $('vendor').value;
+  const r = await fetch('/api/session', { method: 'POST', body: form({
+    api_key: $('key').value, vendor, base_url: $('baseUrl').value.trim() }) });
+  if (r.ok) {
+    $('key').value = '';
+    showMsg('keyMsg', null);
+    // The models and thinking levels on offer are the new provider's.
+    cfg.vendor = vendor;
+    // Remember what actually worked, so the field is right after a refresh.
+    cfg.vendors[vendor].base_url = $('baseUrl').value.trim()
+      || cfg.vendors[vendor].base_url;
+    renderVendor();
+    renderVendorName();
+    toggle(true);
+  }
   else { const e = await errOf(r); showMsg('keyMsg', e.code, e.raw, true); }
 };
 
@@ -364,6 +433,9 @@ $('go').onclick = async () => {
   const fd = form({
     model: $('model').value, lang_in: $('langIn').value, lang_out: $('langOut').value,
     pages: $('pages').value, output: $('output').value, effort: $('effort').value,
+    // Both read the same way round: ticked is the ordinary, thrifty course.
+    cache_read: $('cacheRead').checked ? '1' : '0',
+    cache_write: $('cacheWrite').checked ? '1' : '0',
   });
   fd.append('file', f);
 

@@ -56,7 +56,13 @@ def page_count(path: Path) -> int:
     finally:
         doc.close()
 from webapp.store import DATA_DIR, Store, job_dir  # noqa: E402
-from webapp.translator import DEFAULT_EFFORT, EFFORTS, install as install_translator  # noqa: E402
+from webapp.translator import (  # noqa: E402
+    MeteredDeepseekTranslator, MeteredOpenAITranslator,
+    install as install_translator,
+)
+from webapp.vendors import (  # noqa: E402
+    DEFAULT_VENDOR, EFFORTS, VENDORS, efforts_for, models, symbol_of, vendor_of,
+)
 
 # Route pdf2zh's "deepseek" service to our metered subclass.
 install_translator()
@@ -77,10 +83,17 @@ if not _webapp_log.handlers:
 BASE_DIR = Path(__file__).parent
 
 # `hint` is an i18n key resolved by the client; only the brand name is literal.
-MODELS = {
-    "deepseek-v4-flash": {"label": "DeepSeek V4 Flash", "hint": "model_hint_fast"},
-    "deepseek-v4-pro": {"label": "DeepSeek V4 Pro", "hint": "model_hint_quality"},
-}
+# Which of these a session may use depends on the key it holds — see vendors.py.
+MODELS = models()
+
+# The translator class per provider. pdf2zh resolves these by service name at
+# call time; this is the same choice made on our side, for the probe and the
+# chunked pre-pass which construct one directly.
+TRANSLATORS = {"deepseek": MeteredDeepseekTranslator,
+               "openai": MeteredOpenAITranslator}
+
+# The env prefix each provider's translator reads its settings from.
+PREFIX = {"deepseek": "DEEPSEEK", "openai": "OPENAI"}
 
 # Target languages, mirroring pdf2zh's own GUI language map.
 LANGUAGES = {
@@ -142,6 +155,14 @@ def _settings_int(key: str, env: str, default: int) -> int:
     return value
 
 
+def _settings_str(key: str, env: str, default: str) -> str:
+    """Same rule as the numbers: env var wins and is remembered, else saved."""
+    previous = _SETTINGS.get(key) or default
+    value = os.environ.get(env, "").strip() or previous
+    _SETTINGS[key] = value
+    return value
+
+
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 try:
     _SETTINGS: dict = json.loads(SETTINGS_PATH.read_text())
@@ -170,6 +191,23 @@ CONTEXT = os.environ.get("WEBAPP_CONTEXT", "1").strip() not in ("0", "false", "n
 # thinking is measurably better at keeping aligned.
 CHUNK_CHARS = _settings_int("chunk_chars", "WEBAPP_CHUNK_CHARS",
                             context.CHUNK_CHARS)
+
+# Where each provider's requests go. Not everyone talks to the provider itself:
+# a local gateway speaking the same protocol is addressed the same way, and
+# which one is a property of this machine rather than of the code. Remembered
+# per provider, so switching back and forth does not mean retyping.
+_SETTINGS.setdefault("base_urls", {})
+
+
+def base_url_of(vendor: str) -> str:
+    return (_SETTINGS["base_urls"].get(vendor)
+            or VENDORS[vendor]["base_url"])
+
+
+def set_base_url(vendor: str, url: str) -> None:
+    _SETTINGS["base_urls"][vendor] = url
+    _save_settings()
+
 
 # Above this many threads, a job first spends one call describing the document
 # and agreeing its terminology, so the opening wave of chunks does not each
@@ -228,7 +266,9 @@ class Gate:
 
 
 # The API key is the one thing that stays memory-only, by design.
-SESSIONS: Dict[str, str] = {}
+# sid -> (api key, vendor). The key is only meaningful to the service it
+# was issued by, so the two travel together.
+SESSIONS: Dict[str, tuple] = {}
 STORE = Store()
 GATE = Gate(WORKERS)
 # Sized to the maximum the UI allows; the gate, not the pool, sets concurrency.
@@ -270,8 +310,15 @@ def _shutdown() -> None:
     SESSIONS.clear()
 
 
+def _session(sid: Optional[str]) -> tuple:
+    got = SESSIONS.get(sid or "")
+    if not got:
+        raise HTTPException(status_code=401, detail="err_no_key")
+    return got
+
+
 def _require_key(sid: Optional[str]) -> str:
-    key = SESSIONS.get(sid or "")
+    key = (SESSIONS.get(sid or "") or (None,))[0]
     if not key:
         raise HTTPException(status_code=401, detail="err_no_key")
     return key
@@ -285,8 +332,15 @@ def get_config(sid: Optional[str] = Cookie(None)):
         "outputs": OUTPUTS,
         "data_dir": str(DATA_DIR),
         "efforts": EFFORTS,
+        "vendors": {k: {"label": v["label"], "models": v["models"],
+                        "efforts": v["efforts"],
+                        "default_effort": v["default_effort"],
+                        "symbol": v["symbol"], "currency": v["currency"],
+                        "base_url": base_url_of(k),
+                        "official_url": v["base_url"]}
+                    for k, v in VENDORS.items()},
+        "default_vendor": DEFAULT_VENDOR,
         "resumable": list(RESUMABLE),
-        "default_effort": DEFAULT_EFFORT,
         "pricing": _pricing_now(),
         "ui_langs": UI_LANGS,
         "ui_lang": UI_LANG,
@@ -294,6 +348,7 @@ def get_config(sid: Optional[str] = Cookie(None)):
         "llm_threads": LLM_THREADS,
         "limits": LIMITS,
         "has_key": bool(SESSIONS.get(sid or "")),
+        "vendor": (SESSIONS.get(sid or "") or (None, DEFAULT_VENDOR))[1],
     }
 
 
@@ -323,19 +378,26 @@ def set_ui_lang(lang: str = Form(...)):
 
 
 @app.post("/api/session")
-def set_key(response: Response, api_key: str = Form(...)):
+def set_key(response: Response, api_key: str = Form(...),
+            vendor: str = Form(DEFAULT_VENDOR), base_url: str = Form("")):
     api_key = api_key.strip()
     if not api_key:
         raise HTTPException(status_code=400, detail="err_empty_key")
+    if vendor not in VENDORS:
+        raise HTTPException(status_code=400, detail="err_unknown_vendor")
+    # An address is only remembered once a key has actually worked against it,
+    # so a typo cannot strand later jobs at an endpoint nothing answers on.
+    base_url = (base_url or "").strip().rstrip("/") or base_url_of(vendor)
     try:
-        OpenAI(api_key=api_key, base_url="https://api.deepseek.com").models.list()
+        OpenAI(api_key=api_key, base_url=base_url).models.list()
     except Exception as exc:  # noqa: BLE001 - surface the provider error verbatim
         # Code for the UI to translate, plus the provider's own words verbatim.
         raise HTTPException(status_code=400,
                             detail={"code": "err_key_rejected", "raw": str(exc)})
 
+    set_base_url(vendor, base_url)
     sid = uuid.uuid4().hex
-    SESSIONS[sid] = api_key
+    SESSIONS[sid] = (api_key, vendor)
     # Session cookie: survives a page refresh, dies with the browser session.
     # The key itself lives only in this process's memory.
     response.set_cookie("sid", sid, httponly=True, samesite="lax")
@@ -354,8 +416,8 @@ def _pricing_now() -> dict:
     now = time.time()
     regime = TABLE.regime_at(now)
     return {
-        "currency": TABLE.currency,
-        "symbol": getattr(TABLE, "symbol", "¥"),
+        # Two providers, two currencies, so the symbol belongs to the model.
+        "symbols": {m: symbol_of(m) for m in MODELS},
         "source": TABLE.source,
         "checked_at": TABLE.checked_at,
         "period": TABLE.period(regime, now),
@@ -364,22 +426,35 @@ def _pricing_now() -> dict:
 
 
 def _envs(api_key: str, model: str, effort: str, job_id: str,
-          collect: str = "", doc: str = "") -> dict:
-    return {"DEEPSEEK_API_KEY": api_key, "DEEPSEEK_MODEL": model,
-            "DEEPSEEK_EFFORT": effort, "DEEPSEEK_JOB_ID": job_id,
-            "DEEPSEEK_COLLECT": collect, "DEEPSEEK_DOC": doc}
+          collect: str = "", doc: str = "", cache_read: bool = True,
+          cache_write: bool = True) -> dict:
+    """Settings for whichever provider serves `model`.
+
+    Each provider's translator reads its own prefix, so the prefix is chosen
+    from the model rather than passed in — one fewer argument to get wrong at
+    the four call sites that build these.
+    """
+    p = PREFIX[vendor_of(model)]
+    envs = {f"{p}_API_KEY": api_key, f"{p}_MODEL": model,
+            f"{p}_JOB_ID": job_id, f"{p}_COLLECT": collect, f"{p}_DOC": doc,
+            f"{p}_CACHE_READ": "1" if cache_read else "0",
+            f"{p}_CACHE_WRITE": "1" if cache_write else "0"}
+    if p == "DEEPSEEK":
+        envs["DEEPSEEK_EFFORT"] = effort
+    envs[f"{p}_BASE_URL"] = base_url_of(vendor_of(model))
+    return envs
 
 
 def _with_context(job_id: str, src: Path, api_key: str, model: str,
                   lang_in: str, lang_out: str, pages, effort: str,
                   blocks: dict, lines: dict, order: list, report,
-                  doc_key: str, hidden: dict) -> None:
+                  doc_key: str, hidden: dict, cache_read: bool = True,
+                  cache_write: bool = True) -> None:
     """Pre-translate the document's paragraphs with their neighbours in view.
 
     Best-effort throughout: anything this leaves uncached is translated the
     ordinary way, one isolated paragraph at a time.
     """
-    from webapp.translator import MeteredDeepseekTranslator
 
     STORE.update(job_id, stage="Reading document")
     sink = context.collect_into(job_id)
@@ -387,7 +462,7 @@ def _with_context(job_id: str, src: Path, api_key: str, model: str,
         with marking(order, blocks, lines, hidden):
             translate(files=[str(src)], output=str(src.parent), pages=pages,
                       lang_in=lang_in, lang_out=lang_out,
-                      service=f"deepseek:{model}",
+                      service=f"{vendor_of(model)}:{model}",
                       thread=1,          # keeps the paragraphs in reading order
                       vfont=VFONT, callback=lambda t: report(0, t),
                       model=ModelInstance.value,
@@ -415,9 +490,10 @@ def _with_context(job_id: str, src: Path, api_key: str, model: str,
     #
     # So it is spent only where it pays. Below this, the opening pair of chunks
     # is the whole cold start and the glossary grown chunk by chunk covers it.
-    probe = MeteredDeepseekTranslator(
+    probe = TRANSLATORS[vendor_of(model)](
         lang_in, lang_out, model,
-        envs=_envs(api_key, model, effort, job_id, doc=doc_key))
+        envs=_envs(api_key, model, effort, job_id, doc=doc_key,
+                   cache_read=cache_read, cache_write=cache_write))
 
     # Two facts about the document, always. They cost one small call, they are
     # cached against the document's own text, and they ride in front of every
@@ -444,9 +520,10 @@ def _with_context(job_id: str, src: Path, api_key: str, model: str,
         profile.update({k: v for k, v in found.items() if k not in profile})
         logger.info("job %s: seeded %d terms", job_id, len(found.get("terms") or ()))
 
-    tr = MeteredDeepseekTranslator(lang_in, lang_out, model,
-                                   envs=_envs(api_key, model, effort, job_id,
-                                              doc=doc_key))
+    tr = TRANSLATORS[vendor_of(model)](
+        lang_in, lang_out, model,
+        envs=_envs(api_key, model, effort, job_id, doc=doc_key,
+                   cache_read=cache_read, cache_write=cache_write))
     done, total = context.prepare(tr, paragraphs, profile,
                                   progress=lambda f: report(1, f),
                                   threads=LLM_THREADS, limit=CHUNK_CHARS)
@@ -461,7 +538,8 @@ def _with_context(job_id: str, src: Path, api_key: str, model: str,
 
 def _run_job(job_id: str, src: Path, api_key: str, model: str, lang_in: str,
              lang_out: str, pages: Optional[list], output: str,
-             effort: str, do_whiteout: bool = False) -> None:
+             effort: str, do_whiteout: bool = False,
+             cache_read: bool = True, cache_write: bool = True) -> None:
     # Three passes share one progress bar: reading the document, translating it
     # in context, then laying it out.
     spans = [(0.0, 0.15), (0.15, 0.60), (0.60, 1.0)]
@@ -510,7 +588,7 @@ def _run_job(job_id: str, src: Path, api_key: str, model: str, lang_in: str,
                     _with_context(job_id, src, api_key, model, lang_in,
                                   lang_out, pages, effort, blocks,
                                   lines, order, report, doc_key,
-                                  hidden)
+                                  hidden, cache_read, cache_write)
                 except Exception as exc:      # noqa: BLE001 - quality, not correctness
                     logger.warning("context pass failed for %s: %s", job_id, exc)
             STORE.update(job_id, status="running", stage="Translating")
@@ -521,12 +599,13 @@ def _run_job(job_id: str, src: Path, api_key: str, model: str, lang_in: str,
                     pages=pages,
                     lang_in=lang_in,
                     lang_out=lang_out,
-                    service=f"deepseek:{model}",
+                    service=f"{vendor_of(model)}:{model}",
                     thread=LLM_THREADS,      # read now, so changes apply to new jobs
                     vfont=VFONT,
                     callback=on_progress,
                     model=ModelInstance.value,
-                    envs=_envs(api_key, model, effort, job_id, doc=doc_key),
+                    envs=_envs(api_key, model, effort, job_id, doc=doc_key,
+                               cache_read=cache_read, cache_write=cache_write),
                 )
         # pdf2zh always writes both variants; keep only what was asked for.
         kinds = ["mono", "dual"] if output == "both" else [output]
@@ -579,17 +658,26 @@ async def start_translate(
     lang_out: str = Form("zh"),
     pages: str = Form(""),
     output: str = Form("both"),
-    effort: str = Form(DEFAULT_EFFORT),
+    effort: str = Form(""),
     confirm_scanned: str = Form(""),
     confirm_language: str = Form(""),
+    cache_read: str = Form("1"),
+    cache_write: str = Form("1"),
     sid: Optional[str] = Cookie(None),
 ):
-    api_key = _require_key(sid)
+    reuse, record = cache_read != "0", cache_write != "0"
+    api_key, vendor = _session(sid)
     if model not in MODELS:
         raise HTTPException(status_code=400, detail="err_unknown_model")
+    # The key in this session was issued by one provider; a model served by
+    # another would fail at the first call, after the upload and the layout
+    # pass have already been paid for in wall-clock.
+    if vendor_of(model) != vendor:
+        raise HTTPException(status_code=400, detail="err_wrong_vendor")
     if output not in OUTPUTS:
         raise HTTPException(status_code=400, detail="err_unknown_output")
-    if effort not in EFFORTS:
+    effort = effort or VENDORS[vendor]["default_effort"]
+    if effort not in efforts_for(model):
         raise HTTPException(status_code=400, detail="err_unknown_effort")
     if not (file.filename or "").lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="err_pdf_only")
@@ -619,7 +707,8 @@ async def start_translate(
 
     STORE.create(job_id, name=src.stem, src_name=src.name, model=model,
                  lang_in=lang_in, lang_out=lang_out, pages=pages, output=output,
-                 effort=effort, whiteout=int(bool(scan["scanned"])))
+                 effort=effort, whiteout=int(bool(scan["scanned"])),
+                 vendor=vendor, cache_read=int(reuse), cache_write=int(record))
     _submit(STORE.get(job_id), src, api_key)
     return {"job_id": job_id}
 
@@ -640,7 +729,10 @@ def _source_of(job: dict) -> Optional[Path]:
 def _submit(job: dict, src: Path, api_key: str) -> None:
     POOL.submit(_run_job, job["id"], src, api_key, job["model"], job["lang_in"],
                 job["lang_out"], _parse_pages(job["pages"]), job["output"],
-                job["effort"], bool(job["whiteout"]))
+                job["effort"], bool(job["whiteout"]),
+                # Older rows predate the columns; they read and wrote as a
+                # matter of course, which is what these defaults say.
+                bool(job.get("cache_read", 1)), bool(job.get("cache_write", 1)))
 
 
 RESUMABLE = ("interrupted", "error")

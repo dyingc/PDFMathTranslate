@@ -29,7 +29,8 @@ def _parse(ts: str) -> float:
 class PriceTable:
     def __init__(self, path: Path = PRICING_PATH) -> None:
         data = json.loads(path.read_text())
-        self.currency = data.get("currency", "USD")
+        # Currency belongs to the provider, not to the table: one file now
+        # holds prices in two of them.
         self.source = data.get("source", "")
         self.checked_at = data.get("checked_at", "")
         self.regimes = sorted(
@@ -63,13 +64,18 @@ class PriceTable:
         period = self.period(regime, when)
         return rates.get(period) or rates.get("off_peak")
 
-    def cost(self, model: str, when: float,
-             cache_hit: int, cache_miss: int, output: int) -> Optional[float]:
+    def cost(self, model: str, when: float, cache_hit: int, cache_miss: int,
+             output: int, cache_write: int = 0) -> Optional[float]:
         rate = self.rate(model, when)
         if rate is None:
             return None
+        # Writing a prompt into the cache costs more than sending it uncached,
+        # for providers that charge for it separately. Where they do not, the
+        # write rate is the miss rate and the split makes no difference.
+        write_rate = rate.get("cache_write", rate["cache_miss"])
         return (cache_hit * rate["cache_hit"]
                 + cache_miss * rate["cache_miss"]
+                + cache_write * write_rate
                 + output * rate["output"]) / _MILLION
 
 
@@ -100,6 +106,19 @@ class Meter:
         hit = getattr(usage, "prompt_cache_hit_tokens", None)
         miss = getattr(usage, "prompt_cache_miss_tokens", None)
         prompt = getattr(usage, "prompt_tokens", 0) or 0
+        written = 0
+        if hit is None and miss is None:
+            # OpenAI reports the same split in a different shape: a total, how
+            # much of it was cached, and how much was written to the cache.
+            # Without this the whole prompt counts as a miss, and prompt
+            # caching is most of what makes chunked translation cheap — on one
+            # run, 132k of 236k input tokens.
+            details = getattr(usage, "prompt_tokens_details", None)
+            cached = getattr(details, "cached_tokens", None) if details else None
+            if cached is not None:
+                written = getattr(details, "cache_write_tokens", None) or 0
+                hit = cached
+                miss = max(0, prompt - cached - written)
         if hit is None and miss is None:
             # Provider did not break the prompt down; treat it all as a miss,
             # which over- rather than under-states the cost.
@@ -108,13 +127,15 @@ class Meter:
         out = getattr(usage, "completion_tokens", 0) or 0
 
         cost = TABLE.cost(model, datetime.now(timezone.utc).timestamp(),
-                          hit, miss, out)
+                          hit, miss, out, written)
         with self._lock:
             job = self._jobs.get(job_id)
             if job is None:
                 return
             job["tokens_in_hit"] += hit
-            job["tokens_in_miss"] += miss
+            # Written-to-cache tokens are input misses as far as the reader is
+            # concerned; they only differ in price.
+            job["tokens_in_miss"] += miss + written
             job["tokens_out"] += out
             job["calls"] += 1
             if cost is None:

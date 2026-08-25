@@ -130,6 +130,29 @@ def use_keys(job_id: str, paragraphs: list) -> None:
 def forget_keys(job_id: str) -> None:
     with _lock:
         _keys.pop(job_id, None)
+        _fresh.pop(job_id, None)
+
+
+# What this job has translated during this run, whether or not it is allowed to
+# write that to disk.
+#
+# The chunked pre-pass hands its work to the real pass through the cache, and
+# the two run on different translator instances, so an instance attribute would
+# not survive the handover. Without somewhere to put them, a job told not to
+# write the cache would translate every paragraph twice and pay for it twice,
+# and a job told not to *read* it would do the same — the pre-pass writes, the
+# real pass declines to read, and the bill doubles.
+_fresh: dict = {}
+
+
+def remember_fresh(job_id: str, key: str, translation: str) -> None:
+    with _lock:
+        _fresh.setdefault(job_id, {})[key] = translation
+
+
+def recall_fresh(job_id: str, key: str):
+    with _lock:
+        return (_fresh.get(job_id) or {}).get(key)
 
 
 # What a job knows about its document, reachable from the translator itself so
@@ -729,7 +752,10 @@ def prepare(tr, paragraphs: list, profile: dict = None, progress=None,
         if is_trivial(para):
             continue
         key = cache_key(tr.job_id, para)
-        if key is not None and tr.cache.get(key) is not None:
+        # `cache_read` off means an earlier run's work is not to be reused, so
+        # the skip has to go too — otherwise this pass would decline to
+        # translate exactly the paragraphs the job was told to do again.
+        if key is not None and tr.cache_read and tr.cache.get(key) is not None:
             continue
         todo.append((i, para))
     # Duplicated paragraphs (running headers, repeated captions) only need one.
@@ -768,7 +794,10 @@ def prepare(tr, paragraphs: list, profile: dict = None, progress=None,
             for index, translation in result.items():
                 key = cache_key(tr.job_id, texts[index])
                 if key is not None:
-                    tr.cache.set(key, translation)
+                    # remember() honours cache_write and notes the key as this
+                    # job's own, so the real pass can read it back even when
+                    # reading earlier runs is switched off.
+                    tr.remember(key, translation)
                     written.append((key, translation))
                 done += 1
             finished += 1
@@ -797,7 +826,7 @@ def prepare(tr, paragraphs: list, profile: dict = None, progress=None,
         for key, translation in written:
             fixed = apply_fixups(translation, fixups)
             if fixed != translation:
-                tr.cache.set(key, fixed)
+                tr.remember(key, fixed)
                 repaired += 1
         logger.info("glossary: %d conflicting renderings rewritten in %d "
                     "paragraphs", len(fixups), repaired)

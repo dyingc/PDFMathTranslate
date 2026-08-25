@@ -136,7 +136,11 @@ def _pricing_table():
             assert rates, f"{regime['effective_from']} 缺少 {model} 的价格"
             assert "off_peak" in rates, f"{model} 缺少 off_peak 价格"
             for period in rates.values():
-                assert set(period) == {"cache_hit", "cache_miss", "output"}, period
+                # cache_write is optional: only providers that bill writing a
+                # prompt into the cache at its own rate carry it.
+                required = {"cache_hit", "cache_miss", "output"}
+                assert required <= set(period), period
+                assert not set(period) - required - {"cache_write"}, period
 
 
 @check("VFONT 仍覆盖 pdf2zh 内置的公式字体规则")
@@ -584,6 +588,180 @@ def _hidden_text():
     assert converter.hidden_boxes() == found
     converter.hide({})
     assert converter.hidden_boxes() == {}
+
+
+@check("两家服务商算出同一个缓存键，思考档和模型都不参与")
+def _shared_cache_key():
+    from webapp.translator import (MeteredDeepseekTranslator,
+                                   MeteredOpenAITranslator)
+
+    def key_of(cls, prefix, model, extra=None):
+        envs = {f"{prefix}_API_KEY": "sk-smoke", f"{prefix}_MODEL": model,
+                f"{prefix}_DOC": "abc123", **(extra or {})}
+        tr = cls("en", "zh", model, envs=envs)
+        return tr.cache.translate_engine, tr.cache.translate_engine_params
+
+    ds_flash = key_of(MeteredDeepseekTranslator, "DEEPSEEK", "deepseek-v4-flash",
+                      {"DEEPSEEK_EFFORT": "off"})
+    ds_pro = key_of(MeteredDeepseekTranslator, "DEEPSEEK", "deepseek-v4-pro",
+                    {"DEEPSEEK_EFFORT": "high"})
+    oa = key_of(MeteredOpenAITranslator, "OPENAI", "gpt-5.6-luna")
+    assert ds_flash == ds_pro == oa, f"{ds_flash} / {ds_pro} / {oa}"
+    # The document still separates them; that is the one thing left in the key.
+    other = key_of(MeteredOpenAITranslator, "OPENAI", "gpt-5.6-luna",
+                   {"OPENAI_DOC": "different"})
+    assert other != oa
+    # And the parameters upstream would have keyed by are gone.
+    for gone in ("model", "prompt", "temperature", "thinking", "reasoning"):
+        assert gone not in oa[1], f"{gone} 仍在缓存键里: {oa[1]}"
+
+
+@check("OpenAI 只提供 luna 且强制无思考，计价用美元")
+def _openai_vendor():
+    from webapp.app import MODELS, PREFIX, TRANSLATORS
+    from webapp.pricing import TABLE
+    from webapp.translator import MeteredOpenAITranslator
+    from webapp.vendors import VENDORS, efforts_for, symbol_of, vendor_of
+
+    assert list(VENDORS["openai"]["models"]) == ["gpt-5.6-luna"]
+    assert efforts_for("gpt-5.6-luna") == ["off"], "OpenAI 不应给出思考档选择"
+    assert symbol_of("gpt-5.6-luna") == "$"
+    assert symbol_of("deepseek-v4-flash") == "¥"
+    assert vendor_of("gpt-5.6-luna") == "openai"
+    assert set(TRANSLATORS) == set(PREFIX) == set(VENDORS)
+
+    tr = MeteredOpenAITranslator("en", "zh", "gpt-5.6-luna",
+                                 envs={"OPENAI_API_KEY": "sk-smoke"})
+    assert tr.options["extra_body"]["reasoning_effort"] == "none", tr.options
+
+    # A regime replaces earlier ones wholesale, so every model must appear in
+    # every one of them or it loses its price at that moment.
+    for regime in TABLE.regimes:
+        for model in MODELS:
+            assert model in regime["rates"], \
+                f"{regime['effective_from']} 缺少 {model}"
+
+
+@check("接口地址可配置，且不会串到下一个 translator")
+def _base_url_isolation():
+    from webapp.translator import (MeteredDeepseekTranslator,
+                                   MeteredOpenAITranslator)
+    from webapp.vendors import VENDORS
+
+    local = "http://127.0.0.1:8317/v1"
+    for cls, prefix, vendor in ((MeteredDeepseekTranslator, "DEEPSEEK", "deepseek"),
+                                (MeteredOpenAITranslator, "OPENAI", "openai")):
+        model = list(VENDORS[vendor]["models"])[0]
+        custom = cls("en", "zh", model, envs={f"{prefix}_API_KEY": "k",
+                                              f"{prefix}_BASE_URL": local})
+        assert str(custom.client.base_url).rstrip("/") == local, custom.client.base_url
+
+        # pdf2zh merges each service's envs with the last set it saw, so this
+        # one — built right after, with no address — is where a leak shows up.
+        plain = cls("en", "zh", model, envs={f"{prefix}_API_KEY": "k"})
+        official = VENDORS[vendor]["base_url"]
+        assert str(plain.client.base_url).rstrip("/").startswith(
+            official.rstrip("/").rsplit("/v1", 1)[0]), \
+            f"{vendor} 的默认地址被上一个实例污染了: {plain.client.base_url}"
+
+
+@check("计量包装器真的能转发一次调用，并认出额度耗尽")
+def _metering_wrapper():
+    import openai
+    import httpx
+    from webapp.pricing import METER
+    from webapp.translator import MeteredOpenAITranslator, QuotaExhausted
+
+    job = "smoke-meter"
+    tr = MeteredOpenAITranslator("en", "zh", "gpt-5.6-luna",
+                                 envs={"OPENAI_API_KEY": "sk-smoke",
+                                       "OPENAI_JOB_ID": job})
+
+    class Usage:
+        prompt_tokens, completion_tokens = 1000, 200
+
+        class prompt_tokens_details:
+            cached_tokens, cache_write_tokens = 400, 100
+
+    class Reply:
+        usage = Usage()
+
+    calls = {}
+
+    def fake_create(**kwargs):
+        # `model` is one of the request's own arguments. A wrapper that names a
+        # parameter of its own `model` raises TypeError on every single call,
+        # and no check that never calls it would notice.
+        calls.update(kwargs)
+        return Reply()
+
+    tr.client.chat.completions.create.__wrapped__ = None    # marker, unused
+    METER.start(job)
+    try:
+        wrapper = tr.client.chat.completions.create
+        # Rebuild the wrapper around our fake, the way _meter_client does.
+        tr.client.chat.completions.create = fake_create
+        tr._meter_client()
+        got = tr.client.chat.completions.create(
+            model="gpt-5.6-luna", messages=[{"role": "user", "content": "x"}])
+        assert got is not None and calls["model"] == "gpt-5.6-luna", calls
+        spent = METER.pop(job)
+        assert spent["calls"] == 1, spent
+        assert spent["tokens_in_hit"] == 400, spent
+        assert spent["tokens_in_miss"] == 600, spent      # 500 plain + 100 written
+        assert spent["cost"] > 0, spent
+    finally:
+        tr.client.chat.completions.create = wrapper
+
+    # "Out of quota" and "too fast" are the same 429; only one is worth waiting.
+    def raise_429(message):
+        response = httpx.Response(429, request=httpx.Request("POST", "http://x"))
+        return openai.RateLimitError(message, response=response,
+                                     body={"code": message})
+
+    from webapp.translator import _is_exhausted
+    assert _is_exhausted(raise_429("insufficient_quota"))
+    assert not _is_exhausted(raise_429("rate_limit_exceeded"))
+    assert issubclass(QuotaExhausted, Exception)
+
+
+@check("两个缓存开关各自生效，本次运行的结果始终可读")
+def _cache_flags():
+    from webapp import context
+    from webapp.translator import MeteredOpenAITranslator
+
+    def build(read, write, job):
+        return MeteredOpenAITranslator("en", "zh", "gpt-5.6-luna", envs={
+            "OPENAI_API_KEY": "sk-smoke", "OPENAI_DOC": "smoke-doc",
+            "OPENAI_JOB_ID": job,
+            "OPENAI_CACHE_READ": "1" if read else "0",
+            "OPENAI_CACHE_WRITE": "1" if write else "0"})
+
+    text = "x" * 300          # long enough to be its own cache key
+    job = "smoke-cache-flags"
+    try:
+        # Not writing must not make this run's own work unreadable, or the
+        # pre-pass and the real pass would each pay for the same paragraph.
+        tr = build(True, False, job)
+        tr.remember(text, "译文")
+        assert context.recall_fresh(job, text) == "译文"
+        assert tr.cache.get(text) is None, "cache_write=0 却写了盘"
+
+        tr = build(True, True, job)
+        tr.remember(text, "译文二")
+        assert tr.cache.get(text) == "译文二"
+        # Replace, not insert-and-ignore: a second run must be able to correct
+        # what the first left behind.
+        tr.remember(text, "译文三")
+        assert tr.cache.get(text) == "译文三", "重复键没有被覆盖"
+
+        assert build(False, True, job).cache_read is False
+        assert build(True, False, job).cache_write is False
+    finally:
+        from pdf2zh.cache import _TranslationCache
+        _TranslationCache.delete().where(
+            _TranslationCache.original_text == text).execute()
+        context.forget_keys(job)
 
 
 @check("只有黑色虚线方框算作保留区，读书批注不算")

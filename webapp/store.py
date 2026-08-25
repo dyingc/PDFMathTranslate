@@ -30,6 +30,9 @@ CREATE TABLE IF NOT EXISTS jobs (
     pages       TEXT NOT NULL DEFAULT '',
     output      TEXT NOT NULL,      -- mono | dual | both
     effort      TEXT NOT NULL DEFAULT 'high',  -- off | low | high | max
+    vendor      TEXT NOT NULL DEFAULT 'deepseek',
+    cache_read  INTEGER NOT NULL DEFAULT 1,     -- reuse earlier translations
+    cache_write INTEGER NOT NULL DEFAULT 1,     -- record this run's own
     whiteout    INTEGER NOT NULL DEFAULT 0,    -- erase scanned original text
     status      TEXT NOT NULL,      -- queued | running | done | error | interrupted
     progress    REAL NOT NULL DEFAULT 0,
@@ -62,6 +65,11 @@ _ADDED_COLUMNS = {
     "calls": "INTEGER NOT NULL DEFAULT 0",
     "cost": "REAL NOT NULL DEFAULT 0",
     "priced": "INTEGER NOT NULL DEFAULT 1",
+    # Jobs from before there was a choice were all DeepSeek, and all read and
+    # wrote the cache, so the defaults describe them correctly.
+    "vendor": "TEXT NOT NULL DEFAULT 'deepseek'",
+    "cache_read": "INTEGER NOT NULL DEFAULT 1",
+    "cache_write": "INTEGER NOT NULL DEFAULT 1",
 }
 
 
