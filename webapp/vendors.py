@@ -20,10 +20,6 @@ VENDORS = {
         "currency": "CNY",
         "symbol": "¥",
         "default_effort": "high",
-        # Matches a cached prefix from the first token, with no minimum length,
-        # so the preamble is already cached as it stands and padding it out
-        # would buy nothing while costing the extra tokens.
-        "cache_floor": 0,
         "models": {
             "deepseek-v4-flash": {"label": "DeepSeek V4 Flash",
                                   "hint": "model_hint_fast"},
@@ -42,10 +38,6 @@ VENDORS = {
         # task does not use and bills for it as output tokens, which on one
         # measured run was the difference between ¥0.28 and ¥3.26.
         "default_effort": "off",
-        # Prompts shorter than this are never cached, at any repetition count.
-        # Ours was 445 tokens and so had never once been cached; see the
-        # padding in `context._preamble`.
-        "cache_floor": 1024,
         "models": {
             "gpt-5.6-luna": {"label": "GPT-5.6 Luna", "hint": "model_hint_fast"},
         },
@@ -78,8 +70,3 @@ def efforts_for(model: str) -> list:
 
 def symbol_of(model: str) -> str:
     return VENDORS[vendor_of(model)]["symbol"]
-
-
-def cache_floor_of(model: str) -> int:
-    """Tokens a prompt prefix must reach before this provider will cache it."""
-    return VENDORS[vendor_of(model)].get("cache_floor", 0)
