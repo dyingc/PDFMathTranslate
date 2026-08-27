@@ -266,9 +266,14 @@ class Gate:
 
 
 # The API key is the one thing that stays memory-only, by design.
-# sid -> (api key, vendor). The key is only meaningful to the service it
-# was issued by, so the two travel together.
-SESSIONS: Dict[str, tuple] = {}
+#
+# sid -> {"vendor": the one in use, "keys": {vendor: key}}. A key is only
+# meaningful to the service that issued it, so they are held per provider
+# rather than one at a time: switching to a provider whose key was already
+# given this run costs nothing, and switching back does not throw the first
+# key away. Entering a key stays a once-per-provider-per-run act, which is
+# the whole of the memory-only rule — restarting still forgets everything.
+SESSIONS: Dict[str, dict] = {}
 STORE = Store()
 GATE = Gate(WORKERS)
 # Sized to the maximum the UI allows; the gate, not the pool, sets concurrency.
@@ -311,17 +316,21 @@ def _shutdown() -> None:
 
 
 def _session(sid: Optional[str]) -> tuple:
+    """(key, vendor) for the provider currently in use."""
     got = SESSIONS.get(sid or "")
-    if not got:
+    key = (got or {}).get("keys", {}).get((got or {}).get("vendor"))
+    if not key:
         raise HTTPException(status_code=401, detail="err_no_key")
-    return got
+    return key, got["vendor"]
 
 
 def _require_key(sid: Optional[str]) -> str:
-    key = (SESSIONS.get(sid or "") or (None,))[0]
-    if not key:
-        raise HTTPException(status_code=401, detail="err_no_key")
-    return key
+    return _session(sid)[0]
+
+
+def _ready(sid: Optional[str]) -> list:
+    """Providers this session can switch to without being asked for a key."""
+    return sorted((SESSIONS.get(sid or "") or {}).get("keys", {}))
 
 
 @app.get("/api/config")
@@ -347,8 +356,11 @@ def get_config(sid: Optional[str] = Cookie(None)):
         "workers": WORKERS,
         "llm_threads": LLM_THREADS,
         "limits": LIMITS,
-        "has_key": bool(SESSIONS.get(sid or "")),
-        "vendor": (SESSIONS.get(sid or "") or (None, DEFAULT_VENDOR))[1],
+        "has_key": bool(_ready(sid)),
+        "vendor": (SESSIONS.get(sid or "") or {}).get("vendor", DEFAULT_VENDOR),
+        # So the interface can say which switches are free and which will ask
+        # for a key, instead of finding out by trying.
+        "vendors_ready": _ready(sid),
     }
 
 
@@ -379,7 +391,8 @@ def set_ui_lang(lang: str = Form(...)):
 
 @app.post("/api/session")
 def set_key(response: Response, api_key: str = Form(...),
-            vendor: str = Form(DEFAULT_VENDOR), base_url: str = Form("")):
+            vendor: str = Form(DEFAULT_VENDOR), base_url: str = Form(""),
+            sid: Optional[str] = Cookie(None)):
     api_key = api_key.strip()
     if not api_key:
         raise HTTPException(status_code=400, detail="err_empty_key")
@@ -396,16 +409,42 @@ def set_key(response: Response, api_key: str = Form(...),
                             detail={"code": "err_key_rejected", "raw": str(exc)})
 
     set_base_url(vendor, base_url)
-    sid = uuid.uuid4().hex
-    SESSIONS[sid] = (api_key, vendor)
+    # An existing session is added to, not replaced: a second provider's key
+    # arriving must not discard the first, or switching back would ask for a
+    # key that was already given.
+    if not sid or sid not in SESSIONS:
+        sid = uuid.uuid4().hex
+        SESSIONS[sid] = {"vendor": vendor, "keys": {}}
+    SESSIONS[sid]["keys"][vendor] = api_key
+    SESSIONS[sid]["vendor"] = vendor
     # Session cookie: survives a page refresh, dies with the browser session.
     # The key itself lives only in this process's memory.
     response.set_cookie("sid", sid, httponly=True, samesite="lax")
-    return {"ok": True}
+    return {"ok": True, "vendors_ready": _ready(sid)}
+
+
+@app.post("/api/session/vendor")
+def switch_vendor(vendor: str = Form(...), sid: Optional[str] = Cookie(None)):
+    """Change provider without a key, when this run has already seen one."""
+    if vendor not in VENDORS:
+        raise HTTPException(status_code=400, detail="err_unknown_vendor")
+    session = SESSIONS.get(sid or "")
+    if not session:
+        raise HTTPException(status_code=401, detail="err_no_key")
+    if vendor not in session["keys"]:
+        # Not an error the user did anything wrong to cause — the interface
+        # turns this into a request for the key, with everything else left up.
+        raise HTTPException(status_code=401, detail="err_no_key_for_vendor")
+    session["vendor"] = vendor
+    # Jobs already running hold the key they were started with, so switching
+    # never disturbs them.
+    return {"ok": True, "vendor": vendor}
 
 
 @app.delete("/api/session")
 def clear_key(response: Response, sid: Optional[str] = Cookie(None)):
+    # Every provider's key, not just the one in use: this is the control that
+    # says "forget what I gave you".
     SESSIONS.pop(sid or "", None)
     response.delete_cookie("sid")
     return {"ok": True}

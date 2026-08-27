@@ -616,6 +616,59 @@ def _shared_cache_key():
         assert gone not in oa[1], f"{gone} 仍在缓存键里: {oa[1]}"
 
 
+@check("一个会话记得住多家服务商的 Key，切回不用重输")
+def _session_holds_many_keys():
+    """The memory-only rule is about the disk, not about holding only one key.
+
+    Entering a key stays a once-per-provider-per-run act; what must not happen
+    is a second provider's key quietly evicting the first, which would make
+    switching back ask for something already given.
+    """
+    from fastapi import HTTPException
+
+    from webapp import app as A
+
+    sid = "smoke-session"
+    A.SESSIONS[sid] = {"vendor": "deepseek", "keys": {"deepseek": "sk-ds"}}
+    try:
+        assert A._session(sid) == ("sk-ds", "deepseek")
+        assert A._ready(sid) == ["deepseek"]
+
+        # Switching to a provider with no key must leave the active one alone.
+        try:
+            A.switch_vendor(vendor="openai", sid=sid)
+            raise AssertionError("没有 Key 也切换成功了")
+        except HTTPException as exc:
+            assert exc.detail == "err_no_key_for_vendor", exc.detail
+        assert A._session(sid)[1] == "deepseek", "失败的切换改动了当前服务商"
+
+        A.SESSIONS[sid]["keys"]["openai"] = "sk-oa"
+        A.switch_vendor(vendor="openai", sid=sid)
+        assert A._session(sid) == ("sk-oa", "openai")
+        assert A._ready(sid) == ["deepseek", "openai"]
+
+        # The point of the whole change: the first key is still there.
+        A.switch_vendor(vendor="deepseek", sid=sid)
+        assert A._session(sid) == ("sk-ds", "deepseek"), "切回时第一把 Key 没了"
+
+        # And clearing the session drops every provider's, not just the one
+        # in use — that control means "forget what I gave you".
+        A.SESSIONS.pop(sid)
+        try:
+            A._session(sid)
+            raise AssertionError("会话已清除但仍能取到 Key")
+        except HTTPException as exc:
+            assert exc.detail == "err_no_key", exc.detail
+    finally:
+        A.SESSIONS.pop(sid, None)
+
+    # The interface promises a switch is free by ticking the provider; that
+    # promise is only as good as the list the server sends.
+    src = (Path(__file__).parent / "static" / "index.html").read_text()
+    assert "vendors_ready" in src, "前端不再读取哪些服务商已有 Key"
+    assert "need_key_for_vendor" in src, "缺少'该服务商还未输入 Key'的提示"
+
+
 @check("OpenAI 只提供 luna 且强制无思考，计价用美元")
 def _openai_vendor():
     from webapp.app import MODELS, PREFIX, TRANSLATORS

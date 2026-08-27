@@ -60,11 +60,17 @@
 <h1 data-i18n="title"></h1>
 <p class="sub" data-i18n-vendor="subtitle"></p>
 
-<section id="keyBox">
+<!-- Outside the key box on purpose: this control means "which provider", both
+     when choosing whose key to enter and when switching later. Two selects for
+     one question would be two places to disagree. -->
+<section id="vendorBox">
   <div class="field">
     <label for="vendor" data-i18n="vendor"></label>
     <select id="vendor"></select>
   </div>
+</section>
+
+<section id="keyBox">
   <div class="field">
     <label for="baseUrl" data-i18n="base_url"></label>
     <input id="baseUrl" type="text" spellcheck="false" autocomplete="off">
@@ -181,7 +187,7 @@ function applyI18n() {
   renderVendorName();
   for (const el of document.querySelectorAll('[data-i18n-ph]')) el.placeholder = t(el.dataset.i18nPh);
 
-  fillKeep($('vendor'), Object.entries(cfg.vendors).map(([v, x]) => [v, x.label]));
+  renderVendorList();
   if (cfg.vendor) $('vendor').value = cfg.vendor;
   fillKeep($('output'), Object.entries(cfg.outputs).map(([v, k]) => [v, t(k)]));
   renderVendor();
@@ -192,7 +198,7 @@ function applyI18n() {
   $('hints').innerHTML =
     esc(t('hint_files')).replace('{dir}', `<code>${esc(cfg.data_dir)}</code>`);
 
-  if (lastMsg) showMsg(lastMsg.el, lastMsg.key, lastMsg.raw, lastMsg.isErr);
+  if (lastMsg) showMsg(lastMsg.el, lastMsg.key, lastMsg.raw, lastMsg.isErr, lastMsg.vars);
   render();
 }
 
@@ -200,6 +206,36 @@ function applyI18n() {
 // are that provider's. Where it offers only one level, the control is shown
 // but disabled: greying it out says "not your choice here", where hiding it
 // would suggest the setting does not exist.
+// A tick marks the providers whose key this run already holds, so the cost of
+// a switch is visible before making it rather than after.
+function renderVendorList() {
+  const ready = cfg.vendors_ready || [];
+  fillKeep($('vendor'), Object.entries(cfg.vendors)
+    .map(([v, x]) => [v, ready.includes(v) ? `${x.label} ✓` : x.label]));
+}
+
+// Switching is only a question once a key exists; before that this control
+// just says whose key is about to be entered.
+async function switchVendor() {
+  const vendor = $('vendor').value;
+  renderVendorName();
+  if ($('mainBox').hidden) return;
+  const r = await fetch('/api/session/vendor', { method: 'POST', body: form({ vendor }) });
+  if (r.ok) {
+    cfg.vendor = vendor;
+    $('keyBox').hidden = true;
+    showMsg('keyMsg', null);
+    renderVendor();
+    return;
+  }
+  // No key for this one yet. Ask for it without taking the rest of the page
+  // away: hiding it would strand anyone who switched by mistake, with no way
+  // back except handing over a key they may not have.
+  $('keyBox').hidden = false;
+  showMsg('keyMsg', 'need_key_for_vendor', '',
+          false, { vendor: (cfg.vendors[vendor] || {}).label || vendor });
+}
+
 function renderVendorName() {
   const picked = $('vendor').value || cfg.vendor || cfg.default_vendor;
   const v = cfg.vendors[picked] || {};
@@ -245,9 +281,9 @@ function toggle(hasKey) { $('keyBox').hidden = hasKey; $('mainBox').hidden = !ha
 const form = obj => Object.entries(obj).reduce((f, [k, v]) => (f.append(k, v), f), new FormData());
 
 // Remember which i18n key a status line came from, so it can be re-translated.
-function showMsg(el, key, raw, isErr) {
-  lastMsg = key ? { el, key, raw, isErr } : null;
-  $(el).textContent = key ? t(key) + (raw ? `: ${raw}` : '') : '';
+function showMsg(el, key, raw, isErr, vars) {
+  lastMsg = key ? { el, key, raw, isErr, vars } : null;
+  $(el).textContent = key ? t(key, vars) + (raw ? `: ${raw}` : '') : '';
   $(el).className = 'msg' + (isErr ? ' err' : '');
 }
 // Reads the error code without consuming the body for the caller.
@@ -282,7 +318,7 @@ function restorePrefs() {
   if (!saved.langOut) $('langOut').value = 'zh';
   for (const k of PREF_KEYS) $(k).addEventListener('change', savePrefs);
   $('model').addEventListener('change', renderPrice);
-  $('vendor').addEventListener('change', renderVendorName);
+  $('vendor').addEventListener('change', switchVendor);
   renderPrice();   // the restored model may differ from the default
 }
 function savePrefs() {
@@ -411,19 +447,30 @@ $('saveKey').onclick = async () => {
     showMsg('keyMsg', null);
     // The models and thinking levels on offer are the new provider's.
     cfg.vendor = vendor;
+    cfg.vendors_ready = (await r.json()).vendors_ready || cfg.vendors_ready;
     // Remember what actually worked, so the field is right after a refresh.
     cfg.vendors[vendor].base_url = $('baseUrl').value.trim()
       || cfg.vendors[vendor].base_url;
+    renderVendorList();
+    $('vendor').value = vendor;
     renderVendor();
     renderVendorName();
     toggle(true);
   }
-  else { const e = await errOf(r); showMsg('keyMsg', e.code, e.raw, true); }
+  else {
+    const e = await errOf(r);
+    showMsg('keyMsg', e.code, e.raw, true,
+            { vendor: (cfg.vendors[vendor] || {}).label || vendor });
+  }
 };
 
 $('logout').onclick = async (e) => {
   e.preventDefault();
   await fetch('/api/session', { method: 'DELETE' });
+  // Every provider's key went, so no switch is free any more.
+  cfg.vendors_ready = [];
+  renderVendorList();
+  showMsg('keyMsg', null);
   toggle(false);
 };
 
