@@ -33,6 +33,8 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from webapp.vendors import cache_floor_of, vendor_of
+
 logger = logging.getLogger(__name__)
 
 # Big enough that a paragraph sees real context, small enough that the model
@@ -645,7 +647,93 @@ def _rules(tr) -> str:
     )
 
 
-def _preamble(tr, profile: dict) -> str:
+# Some providers cache a prompt prefix only once it is long enough, and charge
+# full price for anything shorter however often it repeats. Ours came to 445
+# tokens against OpenAI's floor of 1024, so on that provider it had never once
+# been cached — silently, since a miss looks exactly like a cold start.
+#
+# The gap is closed with the document's own opening. Being stable for the whole
+# job is the only property the prefix needs, and unlike filler the opening is
+# something the model can actually use.
+#
+# Paying for more tokens to be charged less for them is only sound while the
+# discount outweighs the addition. luna prices a hit at a tenth of a miss, so
+# padding a 445-token preamble stays profitable up to about 4100 tokens and
+# loses past it. That is why the padding is sized to the floor rather than
+# filled with whatever text is to hand.
+CACHE_MARGIN = 64        # tokens, so message framing cannot leave us just short
+
+# Counting has to be exact, so the padding is skipped outright when it cannot
+# be. A character-count estimate was tried and dropped: tuned to overshoot on
+# English it treats a Chinese source as three times shorter than it is, which on
+# one measurement padded to 3036 tokens — still the right side of break-even,
+# but with the saving all but gone. Guessing at a threshold is how you cross it.
+try:
+    import tiktoken
+    _ENCODING = tiktoken.get_encoding("o200k_base")
+except Exception:        # noqa: BLE001 — absent or no network for the vocabulary
+    _ENCODING = None
+
+
+def token_count(text: str):
+    """Tokens in `text`, or None if that cannot be established."""
+    return len(_ENCODING.encode(text)) if _ENCODING is not None else None
+
+
+# Said before the excerpt, not after: by the time the model reaches the text it
+# must already know this is not the job. The reply is checked against the ids it
+# was asked for, so a model that translates this anyway loses the chunk rather
+# than corrupting it — but a lost chunk falls back to isolated paragraphs, which
+# is the outcome this whole module exists to avoid.
+#
+# It says what the excerpt is for as well as what not to do with it. The two
+# are the same sentence here: the reason this text is worth its tokens is that
+# it tells the model what document it is working on, and a model that
+# understands that is likelier to leave it alone than one merely forbidden.
+_EXCERPT_LEAD = ("Here is how the document you are translating begins. It is "
+                 "given so you know what the document is about and which terms "
+                 "it uses. It is not the work: do not translate it, do not "
+                 "quote it, do not mention it. The segments to translate come "
+                 "after it, in a message of their own.")
+
+# Where the excerpt stops, marked rather than left to be inferred. Not ``` or
+# ''': this app translates papers about source code, and a fence the document
+# can also contain is one the document can close early — after which the rest of
+# its own opening reads as instructions. The closing marker is stripped from the
+# text as well, so the question does not arise.
+_EXCERPT_OPEN = "<<<document opening>>>"
+_EXCERPT_CLOSE = "<<<end of document opening>>>"
+
+
+def _excerpt_block(excerpt: str) -> str:
+    """The excerpt with everything that frames it, or its cost when empty."""
+    return f"{_EXCERPT_LEAD}\n\n{_EXCERPT_OPEN}\n{excerpt}\n{_EXCERPT_CLOSE}\n\n"
+
+
+def _padding(paragraphs: list, want: int) -> str:
+    """The document's opening, to about `want` tokens, cut between paragraphs.
+
+    Cutting on a token boundary would be exact and would also end the excerpt
+    mid-word — or, in a language written without spaces, mid-character. The
+    overshoot from taking whole paragraphs is worth far less than the break-even
+    margin allows.
+    """
+    if want <= 0:
+        return ""
+    out, total = [], 0
+    for para in paragraphs or ():
+        if is_trivial(para):
+            continue
+        out.append(para[:CLIP].replace(_EXCERPT_CLOSE, ""))
+        total += token_count(out[-1])
+        if total >= want:
+            break
+    # Short of the floor is the one outcome with no upside: paid for on every
+    # call, cached on none. Send nothing rather than nearly enough.
+    return "\n\n".join(out) if total >= want else ""
+
+
+def _preamble(tr, profile: dict, paragraphs: list = None) -> str:
     """The part of the prompt that never changes, so it stays cache-hot.
 
     DeepSeek prices a cached prompt prefix at a fiftieth of a fresh one, but
@@ -658,7 +746,30 @@ def _preamble(tr, profile: dict) -> str:
     lines = [f"{k.capitalize()}: {profile[k]}"
              for k in ("title", "field", "topic", "summary") if profile.get(k)]
     block = "This document:\n" + "\n".join(lines) + "\n\n" if lines else ""
-    return f"{_rules(tr)}\n\n{block}"
+    text = f"{_rules(tr)}\n\n{block}"
+
+    floor = cache_floor_of(getattr(tr, "model", "") or "")
+    if not floor:
+        return text
+    if _ENCODING is None:
+        # Said out loud: the alternative is a provider silently billing every
+        # prompt at full price, which is exactly the state this padding exists
+        # to leave and looks like nothing at all from the outside.
+        logger.warning("tiktoken unavailable: prompts stay below %s's %d-token "
+                       "cache floor and none of them will be cached",
+                       vendor_of(tr.model), floor)
+        return text
+    # The frame is measured rather than guessed at, so rewording it cannot
+    # quietly leave the prompt a few tokens short of the floor it is sized to.
+    want = (floor + CACHE_MARGIN - token_count(text)
+            - token_count(_excerpt_block("")))
+    excerpt = _padding(paragraphs, want)
+    # A document too short to reach the floor gets no padding: it would be paid
+    # for on every call and cached on none. Such a job is a handful of calls
+    # anyway, so there is nothing to save.
+    if not excerpt:
+        return text
+    return text + _excerpt_block(excerpt)
 
 
 def _ask(tr, messages: list) -> str:
@@ -774,7 +885,9 @@ def prepare(tr, paragraphs: list, profile: dict = None, progress=None,
     # failed and the glossary mattered most.
     if profile is None:
         profile = {}
-    preamble = _preamble(tr, profile)
+    # `paragraphs` in document order, so the padding is the document's opening
+    # and not an arbitrary slice of it.
+    preamble = _preamble(tr, profile, paragraphs)
     glossary = Glossary(profile.get("terms"), profile.get("forms"))
     # Reachable from the translator, so a paragraph left behind by a rejected
     # chunk still gets the document's facts and whatever terms are agreed by
