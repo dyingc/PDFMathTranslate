@@ -134,7 +134,7 @@ DEFAULT_UI_LANG = "zh"
 
 
 # Everything except the API key is durable: settings you pass once stick around
-# for the next start, so `start.sh` needs no flags after the first time.
+# for the next start, so `start_webapp.sh` needs no flags after the first time.
 SETTINGS_PATH = DATA_DIR / "settings.json"
 
 

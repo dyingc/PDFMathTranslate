@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Start the PDF translation web app.
 #
-#   ./webapp/start.sh [PORT] [-w N] [-t N]
+#   ./start_webapp.sh [PORT] [-w N] [-t N]
 #
 #   -w, --workers N     并发翻译的任务数        (默认 2, 或 $WEBAPP_WORKERS)
 #   -t, --llm-threads N 每个任务的 LLM 并发线程  (默认 4, 或 $WEBAPP_LLM_THREADS)
 #
-# 实际打给 DeepSeek 的并发请求上限是 workers × llm-threads。
+# 实际打给服务商的并发请求上限是 workers × llm-threads。
 #
 # Port selection:
 #   - prefers $PORT / $1 / 8077
@@ -16,7 +16,7 @@
 #     8000..9000
 set -euo pipefail
 
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP="webapp.app:app"
 APP_SIGNATURE="uvicorn ${APP}"   # how our own processes look in `ps`
 DEFAULT_PORT="${PORT:-8077}"
@@ -83,7 +83,9 @@ while [ $# -gt 0 ]; do
     case "$1" in
         -w|--workers)      export WEBAPP_WORKERS="$2"; shift 2 ;;
         -t|--llm-threads)  export WEBAPP_LLM_THREADS="$2"; shift 2 ;;
-        -h|--help)         sed -n '2,12p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        # Usage only: the port-selection notes below it are for whoever edits
+        # this file, and printing half of them was what the old range did.
+        -h|--help)         sed -n '2,9p' "${BASH_SOURCE[0]}"; exit 0 ;;
         [0-9]*)            DEFAULT_PORT="$1"; shift ;;
         *) echo "未知参数: $1（用 -h 查看用法）" >&2; exit 2 ;;
     esac

@@ -38,8 +38,8 @@ uv pip install --python .venv/bin/python "tencentcloud-sdk-python-tmt==3.0.1250"
 ## 运行
 
 ```bash
-./webapp/start.sh          # 默认 8077
-./webapp/start.sh 8123     # 指定端口
+./start_webapp.sh          # 默认 8077
+./start_webapp.sh 8123     # 指定端口
 ```
 
 端口被本应用的旧实例占用时会先杀掉旧的、沿用同一端口；被其他程序占用则自动在
@@ -59,7 +59,7 @@ uv pip install --python .venv/bin/python "tencentcloud-sdk-python-tmt==3.0.1250"
 也可以在启动时指定，作为首次运行的初始值：
 
 ```bash
-./webapp/start.sh -w 4 -t 8
+./start_webapp.sh -w 4 -t 8
 ```
 
 等价环境变量 `WEBAPP_WORKERS` / `WEBAPP_LLM_THREADS`。优先级是
