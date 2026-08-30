@@ -8,6 +8,8 @@ rebase conflict-free and still break these silently.
 """
 
 import inspect
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -75,11 +77,33 @@ def _i18n_complete():
     import re
     from webapp.app import LANGUAGES, MODELS, OUTPUTS
 
-    src = (Path(__file__).parent / "static" / "i18n.js").read_text()
+    path = Path(__file__).parent / "static" / "i18n.js"
+    src = path.read_text()
+
+    # Does the file still parse at all? Everything below reads it with regexes,
+    # which is why this has to come first: a batch edit once appended ten
+    # translations *after* the last language block, and every check below
+    # passed. They were outside every block, so the block parser could not see
+    # them, and they were missing from all ten languages equally, so the
+    # "same keys everywhere" test still held. The page went blank — the whole
+    # script failed to load — while the suite reported 32 of 32.
+    node = shutil.which("node")
+    if node:
+        proc = subprocess.run([node, "--check", str(path)],
+                              capture_output=True, text=True)
+        assert proc.returncode == 0, f"i18n.js 不是合法 JS:\n{proc.stderr.strip()}"
+
     # Crude but dependency-free: one block per language, keys are bare idents.
     blocks = re.findall(r'"([\w-]+)":\s*\{(.*?)\n  \}', src, re.S)
     table = {lang: set(re.findall(r"^\s{4}(\w+):", body, re.M))
              for lang, body in blocks}
+
+    # And the same trap without needing node: every translation line has to
+    # live inside some block. Counting them is enough to know none escaped.
+    loose = len(re.findall(r'^    \w+: "', src, re.M))
+    inside = sum(len(re.findall(r'^    \w+: "', body, re.M)) for _, body in blocks)
+    assert loose == inside, \
+        f"{loose - inside} 行译文落在所有语言块之外，文件已损坏"
 
     missing_langs = set(LANGUAGES) - set(table)
     assert not missing_langs, f"缺少界面语言: {sorted(missing_langs)}"
