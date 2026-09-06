@@ -31,8 +31,30 @@ from fastapi.responses import FileResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from openai import OpenAI  # noqa: E402
 
-from pdf2zh.doclayout import ModelInstance, OnnxModel  # noqa: E402
+from pdf2zh.doclayout import ModelInstance, OnnxModel, set_backend  # noqa: E402
 from pdf2zh.high_level import translate  # noqa: E402
+
+# --- Layout detection runs on the CPU, deliberately. --------------------------
+# Left to choose for itself, onnxruntime picks CoreML on Apple silicon, where it
+# fails outright above a certain input size:
+#
+#   imgsz <= 992   works
+#   imgsz >= 1024  "Error in dynamically resizing for sequence length (-6)"
+#
+# translate_patch asks for `int(page_pixel_height / 32) * 32`, and get_pixmap()
+# renders at 72 dpi, so imgsz is the page height in points. Letter (792) and A4
+# (842) sit under the limit, which is why this stayed hidden: every document
+# tried until now was one of those. A page taller than about 1024 points fails
+# on every page of the document, and the job dies with it.
+#
+# The reason to give up rather than work around it is what the acceleration is
+# worth. Measured on this machine at sizes both providers can handle, CoreML
+# beat the CPU by 12-16% — it offloads 685 of the model's 816 nodes and shuttles
+# tensors back for the rest. Over a whole job that is a few seconds against
+# minutes spent waiting on the translation API. Trading that for "some documents
+# cannot be translated at all" is not a trade worth making, and a fallback path
+# would only add a failed inference per page to reach the same place.
+set_backend("cpu")
 
 from webapp import context  # noqa: E402
 from webapp.pricing import METER, TABLE  # noqa: E402

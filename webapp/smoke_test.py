@@ -640,6 +640,33 @@ def _shared_cache_key():
         assert gone not in oa[1], f"{gone} 仍在缓存键里: {oa[1]}"
 
 
+@check("版面模型走 CPU，不会在大页面上整份失败")
+def _layout_runs_on_cpu():
+    """CoreML cannot resize past imgsz 1024 and takes the whole job down with it.
+
+    The size asked for is the page height in points, so this is not a rare
+    input: anything taller than Letter or A4 hits it on every page. Measured
+    gain from the accelerator where it does work was 12-16%, which is why the
+    choice here is to do without rather than to fall back after each failure.
+    """
+    import numpy as np
+
+    from pdf2zh import doclayout
+    import webapp.app  # noqa: F401 - importing is what pins the backend
+
+    assert hasattr(doclayout, "set_backend"), "上游不再提供 set_backend"
+    assert doclayout._preferred_backend == "cpu", \
+        f"版面模型没有被固定到 CPU: {doclayout._preferred_backend}"
+
+    model = doclayout.ModelInstance.value or doclayout.OnnxModel.from_pretrained()
+    assert "CoreMLExecutionProvider" not in model.model.get_providers(), \
+        model.model.get_providers()
+    # The size that fails under CoreML, actually run — a provider list is only
+    # evidence about configuration, not about whether inference survives.
+    page = np.zeros((1188, 918, 3), dtype=np.uint8)
+    assert model.predict(page, imgsz=1152), "1152 尺寸下没有返回结果"
+
+
 @check("一个会话记得住多家服务商的 Key，切回不用重输")
 def _session_holds_many_keys():
     """The memory-only rule is about the disk, not about holding only one key.
