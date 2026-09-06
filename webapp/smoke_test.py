@@ -642,12 +642,12 @@ def _shared_cache_key():
 
 @check("版面模型走 CPU，不会在大页面上整份失败")
 def _layout_runs_on_cpu():
-    """CoreML cannot resize past imgsz 1024 and takes the whole job down with it.
+    """CoreML takes the whole job down with it, and not only at sizes we can name.
 
-    The size asked for is the page height in points, so this is not a rare
-    input: anything taller than Letter or A4 hits it on every page. Measured
-    gain from the accelerator where it does work was 12-16%, which is why the
-    choice here is to do without rather than to fall back after each failure.
+    Past imgsz 1024 it fails every time, which is what the inference below
+    stands on. It has also failed twice at 768, which no experiment here
+    reproduces — so the guard is that the provider is absent, not that some
+    size threshold is respected. Measured gain where it does work was 12-16%.
     """
     import numpy as np
 
