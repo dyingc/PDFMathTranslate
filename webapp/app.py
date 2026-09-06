@@ -55,13 +55,23 @@ from pdf2zh.high_level import translate  # noqa: E402
 # seen earlier in the process, and not concurrent use of the session; all four
 # were tested and none reproduce it.
 #
-# The second kind is why this is a switch rather than a size check. What settles
-# it is that the acceleration is worth 12-16%, measured at sizes both providers
-# handle — CoreML takes 685 of the model's 816 nodes and shuttles tensors back
-# for the rest. Seconds per job, against minutes spent waiting on the
-# translation API. No amount of that is worth a failure mode that cannot be
-# predicted, and a fallback path would spend a failed inference per page to
-# arrive at this same CPU result.
+# The second kind is why this is a switch rather than a size check.
+#
+# What it costs, measured on 16 real pages rather than on noise: CoreML 276 ms
+# per page against the CPU's 480, so the CPU is 1.74x slower here. An earlier
+# figure of 12-16% in this comment was wrong — it timed a fresh input shape on
+# every call, so most of what it recorded was CoreML compiling.
+#
+# What decides it is the share, which the ratio hides. Layout runs twice per job
+# and came to 15 s of a 576 s job: 3%. Dropping the accelerator cost 6.5 s of
+# that job, or 1%, and the two runs either side of the change agree — 83.9 and
+# 83.0 output tokens per second of wall clock. The rest is spent waiting on the
+# translation API, which is 40x the difference being argued about.
+#
+# So a fallback path would buy back 1% of wall clock in exchange for one failed
+# inference per page and a second session to keep. Against a provider that
+# fails unpredictably, and whose failure kills the whole job, that is not worth
+# owning.
 set_backend("cpu")
 
 from webapp import context  # noqa: E402
