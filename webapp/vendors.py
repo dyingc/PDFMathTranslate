@@ -33,13 +33,13 @@ VENDORS = {
         "base_url": "https://api.openai.com/v1",
         "currency": "USD",
         "symbol": "$",
-        # gpt-5.6-luna is a reasoning model whose effort can be turned down to
+        # gpt-6-luna is a reasoning model whose effort can be turned down to
         # "none". Only that setting is offered: the others buy reasoning this
         # task does not use and bills for it as output tokens, which on one
         # measured run was the difference between ¥0.28 and ¥3.26.
         "default_effort": "off",
         "models": {
-            "gpt-5.6-luna": {"label": "GPT-5.6 Luna", "hint": "model_hint_fast"},
+            "gpt-6-luna": {"label": "GPT-6 Luna", "hint": "model_hint_fast"},
         },
         "efforts": ["off"],
     },

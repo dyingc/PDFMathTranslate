@@ -10,7 +10,8 @@
     "OpenAI 不分峰谷。cache_write 是「写入缓存」的单价，比普通输入贵；接口在",
     "prompt_tokens_details.cache_write_tokens 里报告这部分，所以能单独计价。",
     "没有 cache_write 的模型（DeepSeek）按 cache_miss 计，等于不区分。",
-    "gpt-5.6-luna 另有 long context 档（约两倍），本应用的分块远达不到，故只列 short。",
+    "gpt-5.6-luna 与 gpt-6-luna 另有 long context 档（输入约两倍、输出约 1.5 倍），本应用的分块远达不到，故只列 short。",
+    "gpt-5.6-luna 已被 gpt-6-luna 取代，不再提供选择；保留它的价格只作为历史账目的依据。",
     "官方随时可能调价：更新时在 regimes 末尾追加一条，不要修改历史条目——",
     "历史任务的费用是按它当时的价格算的，改动旧条目会篡改已有账目。"
   ],
@@ -18,7 +19,7 @@
     "deepseek": "https://api-docs.deepseek.com/zh-cn/quick_start/pricing",
     "openai": "https://developers.openai.com/api/docs/pricing"
   },
-  "checked_at": "2026-08-24",
+  "checked_at": "2026-09-24",
   "regimes": [
     {
       "effective_from": "1970-01-01T00:00:00Z",
@@ -45,6 +46,14 @@
             "cache_miss": 0.2,
             "output": 1.2,
             "cache_write": 0.25
+          }
+        },
+        "gpt-6-luna": {
+          "off_peak": {
+            "cache_hit": 0.01,
+            "cache_miss": 0.1,
+            "output": 0.5,
+            "cache_write": 0.125
           }
         }
       }
@@ -93,6 +102,14 @@
             "cache_miss": 0.2,
             "output": 1.2,
             "cache_write": 0.25
+          }
+        },
+        "gpt-6-luna": {
+          "off_peak": {
+            "cache_hit": 0.01,
+            "cache_miss": 0.1,
+            "output": 0.5,
+            "cache_write": 0.125
           }
         }
       }

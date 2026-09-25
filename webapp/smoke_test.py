@@ -629,10 +629,10 @@ def _shared_cache_key():
                       {"DEEPSEEK_EFFORT": "off"})
     ds_pro = key_of(MeteredDeepseekTranslator, "DEEPSEEK", "deepseek-v4-pro",
                     {"DEEPSEEK_EFFORT": "high"})
-    oa = key_of(MeteredOpenAITranslator, "OPENAI", "gpt-5.6-luna")
+    oa = key_of(MeteredOpenAITranslator, "OPENAI", "gpt-6-luna")
     assert ds_flash == ds_pro == oa, f"{ds_flash} / {ds_pro} / {oa}"
     # The document still separates them; that is the one thing left in the key.
-    other = key_of(MeteredOpenAITranslator, "OPENAI", "gpt-5.6-luna",
+    other = key_of(MeteredOpenAITranslator, "OPENAI", "gpt-6-luna",
                    {"OPENAI_DOC": "different"})
     assert other != oa
     # And the parameters upstream would have keyed by are gone.
@@ -727,14 +727,14 @@ def _openai_vendor():
     from webapp.translator import MeteredOpenAITranslator
     from webapp.vendors import VENDORS, efforts_for, symbol_of, vendor_of
 
-    assert list(VENDORS["openai"]["models"]) == ["gpt-5.6-luna"]
-    assert efforts_for("gpt-5.6-luna") == ["off"], "OpenAI 不应给出思考档选择"
-    assert symbol_of("gpt-5.6-luna") == "$"
+    assert list(VENDORS["openai"]["models"]) == ["gpt-6-luna"]
+    assert efforts_for("gpt-6-luna") == ["off"], "OpenAI 不应给出思考档选择"
+    assert symbol_of("gpt-6-luna") == "$"
     assert symbol_of("deepseek-v4-flash") == "¥"
-    assert vendor_of("gpt-5.6-luna") == "openai"
+    assert vendor_of("gpt-6-luna") == "openai"
     assert set(TRANSLATORS) == set(PREFIX) == set(VENDORS)
 
-    tr = MeteredOpenAITranslator("en", "zh", "gpt-5.6-luna",
+    tr = MeteredOpenAITranslator("en", "zh", "gpt-6-luna",
                                  envs={"OPENAI_API_KEY": "sk-smoke"})
     assert tr.options["extra_body"]["reasoning_effort"] == "none", tr.options
 
@@ -777,7 +777,7 @@ def _metering_wrapper():
     from webapp.translator import MeteredOpenAITranslator, QuotaExhausted
 
     job = "smoke-meter"
-    tr = MeteredOpenAITranslator("en", "zh", "gpt-5.6-luna",
+    tr = MeteredOpenAITranslator("en", "zh", "gpt-6-luna",
                                  envs={"OPENAI_API_KEY": "sk-smoke",
                                        "OPENAI_JOB_ID": job})
 
@@ -807,8 +807,8 @@ def _metering_wrapper():
         tr.client.chat.completions.create = fake_create
         tr._meter_client()
         got = tr.client.chat.completions.create(
-            model="gpt-5.6-luna", messages=[{"role": "user", "content": "x"}])
-        assert got is not None and calls["model"] == "gpt-5.6-luna", calls
+            model="gpt-6-luna", messages=[{"role": "user", "content": "x"}])
+        assert got is not None and calls["model"] == "gpt-6-luna", calls
         spent = METER.pop(job)
         assert spent["calls"] == 1, spent
         assert spent["tokens_in_hit"] == 400, spent
@@ -835,7 +835,7 @@ def _cache_flags():
     from webapp.translator import MeteredOpenAITranslator
 
     def build(read, write, job):
-        return MeteredOpenAITranslator("en", "zh", "gpt-5.6-luna", envs={
+        return MeteredOpenAITranslator("en", "zh", "gpt-6-luna", envs={
             "OPENAI_API_KEY": "sk-smoke", "OPENAI_DOC": "smoke-doc",
             "OPENAI_JOB_ID": job,
             "OPENAI_CACHE_READ": "1" if read else "0",

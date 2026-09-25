@@ -275,7 +275,7 @@ class MeteredOpenAITranslator(_Metered, OpenAITranslator):
     envs = {
         "OPENAI_BASE_URL": VENDORS["openai"]["base_url"],
         "OPENAI_API_KEY": None,
-        "OPENAI_MODEL": "gpt-5.6-luna",
+        "OPENAI_MODEL": "gpt-6-luna",
         "OPENAI_STREAM": "true",
         "OPENAI_STOP_TOKENS": "",
         "OPENAI_MAX_TOKENS": -1,
@@ -290,7 +290,7 @@ class MeteredOpenAITranslator(_Metered, OpenAITranslator):
                  ignore_cache=False, **kwargs):
         super().__init__(lang_in, lang_out, model, envs=envs, prompt=prompt,
                          ignore_cache=ignore_cache, **kwargs)
-        # gpt-5.6-luna reasons by default, and reasoning is billed as output —
+        # gpt-6-luna reasons by default, and reasoning is billed as output —
         # the expensive half of the bill — for a task that is transcription
         # rather than deduction. The interface offers no other setting; this is
         # what makes that true of the request as well.
