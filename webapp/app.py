@@ -101,7 +101,7 @@ from webapp.translator import (  # noqa: E402
     install as install_translator,
 )
 from webapp.vendors import (  # noqa: E402
-    DEFAULT_VENDOR, EFFORTS, VENDORS, efforts_for, models, symbol_of, vendor_of,
+    DEFAULT_VENDOR, EFFORTS, VENDORS, efforts_for, models, symbols, vendor_of,
 )
 
 # Route pdf2zh's "deepseek" service to our metered subclass.
@@ -496,7 +496,8 @@ def _pricing_now() -> dict:
     regime = TABLE.regime_at(now)
     return {
         # Two providers, two currencies, so the symbol belongs to the model.
-        "symbols": {m: symbol_of(m) for m in MODELS},
+        # Retired models too: the job list still shows what they cost.
+        "symbols": symbols(),
         "source": TABLE.source,
         "checked_at": TABLE.checked_at,
         "period": TABLE.period(regime, now),

@@ -41,6 +41,9 @@ VENDORS = {
         "models": {
             "gpt-6-luna": {"label": "GPT-6 Luna", "hint": "model_hint_fast"},
         },
+        # No longer offered, but past jobs ran on them and still need to be
+        # attributed to this vendor — their bill is in dollars, not yuan.
+        "retired": ["gpt-5.6-luna"],
         "efforts": ["off"],
     },
 }
@@ -51,7 +54,7 @@ DEFAULT_VENDOR = "deepseek"
 def vendor_of(model: str) -> str:
     """Which provider serves this model. Model names do not collide."""
     for name, vendor in VENDORS.items():
-        if model in vendor["models"]:
+        if model in vendor["models"] or model in vendor.get("retired", ()):
             return name
     return DEFAULT_VENDOR
 
@@ -70,3 +73,9 @@ def efforts_for(model: str) -> list:
 
 def symbol_of(model: str) -> str:
     return VENDORS[vendor_of(model)]["symbol"]
+
+
+def symbols() -> dict:
+    """Currency symbol for every model a job may have run on, retired included."""
+    return {m: v["symbol"] for v in VENDORS.values()
+            for m in [*v["models"], *v.get("retired", ())]}

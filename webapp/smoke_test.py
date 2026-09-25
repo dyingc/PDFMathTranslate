@@ -725,13 +725,18 @@ def _openai_vendor():
     from webapp.app import MODELS, PREFIX, TRANSLATORS
     from webapp.pricing import TABLE
     from webapp.translator import MeteredOpenAITranslator
-    from webapp.vendors import VENDORS, efforts_for, symbol_of, vendor_of
+    from webapp.vendors import (VENDORS, efforts_for, symbol_of, symbols,
+                                vendor_of)
 
     assert list(VENDORS["openai"]["models"]) == ["gpt-6-luna"]
     assert efforts_for("gpt-6-luna") == ["off"], "OpenAI 不应给出思考档选择"
     assert symbol_of("gpt-6-luna") == "$"
     assert symbol_of("deepseek-v4-flash") == "¥"
     assert vendor_of("gpt-6-luna") == "openai"
+    # Past jobs keep the model they ran on; a retired one must still be billed
+    # in dollars rather than falling through to the default vendor's yuan.
+    assert vendor_of("gpt-5.6-luna") == "openai"
+    assert symbols()["gpt-5.6-luna"] == "$"
     assert set(TRANSLATORS) == set(PREFIX) == set(VENDORS)
 
     tr = MeteredOpenAITranslator("en", "zh", "gpt-6-luna",
